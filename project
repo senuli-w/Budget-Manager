@@ -1,0 +1,29 @@
+I need you to build a very simple budget management software for my own use. 
+the frontend - built with html, css, js will be hosted on github pages. 
+but the data will be saved on a free database- i am thinking mongodb atlas free version - app service. 
+because using app service we can use mongodb as the backend that saves the data and connect to the frontend, 
+please tell me if this is possible?
+
+
+if yes write the application for it. 
+
+
+here are the requirements.
+
+there are few accounts i have. (BOC, HNB, Cash)
+
+i should be able to add the number of accounts.
+
+in each account can add balance.
+
+and we can put entries to increase and decrease from them.
+what i mean by that is, if i use money for a payment. i can add a description, and amount, it automatically reduces the value, 
+and if i make some money also its like that. should be able to do transactions from one account to another.
+
+and need to show a dashboard also that gives me insight.
+need a budget planner that can let me plan the budget expenses for the month.
+
+
+just think of a general good budget tracking and income and expense recording application and build it. use a good interface. 
+i want this to be customized for me. so when you create this i will use it and tell you what to change. for the mongodb connection, 
+give me the steps to create a clucster and app service and how to conenct it to this app. 
