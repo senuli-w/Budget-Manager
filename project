@@ -26,4 +26,11 @@ need a budget planner that can let me plan the budget expenses for the month.
 
 just think of a general good budget tracking and income and expense recording application and build it. use a good interface. 
 i want this to be customized for me. so when you create this i will use it and tell you what to change. for the mongodb connection, 
-give me the steps to create a clucster and app service and how to conenct it to this app. 
+give me the steps to create a clucster and app service and how to conenct it to this app. the steps should be very clear like for someone who hasnt used mongodb atlas before.
+
+use bootstrap for styling.
+
+listen the atlas app services have changed alot. they have updated things and i tried my best but i couldnt set up any authentication or rules in the app service. we need to find an alternative to this. this is my goal of this application, its a frontend app hosted on github because its free, and i dont have money. can be accessed from any devide, so a free hosted database that can provide me app services for free. like atlas . but now atlas is not working i dont know why. i want you to do some research and find an alternative to this.
+
+
+npm install -g firebase-tools
