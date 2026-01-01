@@ -13,7 +13,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     showLoading();
     
     // Initialize database connection
-    await db.init();
+    const initResult = await db.init();
+    
+    // Check if login is required
+    if (initResult.requiresLogin) {
+        hideLoading();
+        showLoginScreen();
+        return;
+    }
     
     // Load initial data
     await loadAllData();
@@ -983,4 +990,65 @@ function importData(event) {
         }
     };
     reader.readAsText(file);
+}
+
+// ===================
+// LOGIN FUNCTIONS
+// ===================
+
+function showLoginScreen() {
+    document.getElementById('loginScreen').style.display = 'flex';
+    document.querySelector('nav').style.display = 'none';
+    document.querySelector('main').style.display = 'none';
+}
+
+function hideLoginScreen() {
+    document.getElementById('loginScreen').style.display = 'none';
+    document.querySelector('nav').style.display = 'block';
+    document.querySelector('main').style.display = 'block';
+}
+
+async function handleLogin() {
+    const password = document.getElementById('loginPassword').value;
+    
+    if (!password) {
+        showToast('Please enter your password', 'error');
+        return;
+    }
+    
+    showLoading();
+    
+    const result = await db.signIn(password);
+    
+    if (result.success) {
+        document.getElementById('loginPassword').value = '';
+        hideLoginScreen();
+        
+        // Load data and initialize app
+        await loadAllData();
+        setupNavigation();
+        setupEventListeners();
+        initializeDateInputs();
+        initializeBudgetMonthSelector();
+        showSection('dashboard');
+        
+        showToast('Welcome back!', 'success');
+    } else {
+        showToast('Invalid password. Please try again.', 'error');
+    }
+    
+    hideLoading();
+}
+
+async function handleLogout() {
+    if (!confirm('Are you sure you want to logout?')) {
+        return;
+    }
+    
+    showLoading();
+    await db.signOut();
+    hideLoading();
+    
+    showLoginScreen();
+    showToast('Logged out successfully', 'info');
 }

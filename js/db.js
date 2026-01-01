@@ -9,14 +9,14 @@ class Database {
         this.useLocalStorage = false;
     }
 
-    // Initialize Firebase (anonymous auth) with graceful fallback to localStorage
+    // Initialize Firebase with email/password auth and session persistence
     async init() {
         try {
             if (typeof firebase === 'undefined' || !CONFIG?.FIREBASE_CONFIG?.apiKey) {
                 console.warn('Firebase SDK not available or config missing. Using local storage.');
                 this.useLocalStorage = true;
                 this.isConnected = true;
-                return true;
+                return { requiresLogin: false };
             }
 
             if (!firebase.apps.length) {
@@ -26,23 +26,80 @@ class Database {
             this.auth = firebase.auth();
             this.firestore = firebase.firestore();
 
-            await this.auth.signInAnonymously();
-            this.userId = this.auth.currentUser?.uid || null;
+            // Enable session persistence (lasts 1 week)
+            await this.auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
 
-            if (!this.userId) {
-                throw new Error('Anonymous auth failed');
-            }
-
-            this.useLocalStorage = false;
-            this.isConnected = true;
-            console.log('Connected to Firebase Firestore');
-            return true;
+            // Check if user is already signed in
+            return new Promise((resolve) => {
+                this.auth.onAuthStateChanged(async (user) => {
+                    if (user) {
+                        this.userId = user.uid;
+                        this.userEmail = user.email;
+                        this.useLocalStorage = false;
+                        this.isConnected = true;
+                        
+                        // Check if session is older than 1 week
+                        const lastLogin = localStorage.getItem('lastLoginTime');
+                        const oneWeek = 7 * 24 * 60 * 60 * 1000;
+                        if (lastLogin && (Date.now() - parseInt(lastLogin)) > oneWeek) {
+                            await this.auth.signOut();
+                            localStorage.removeItem('lastLoginTime');
+                            resolve({ requiresLogin: true });
+                        } else {
+                            console.log('Already signed in to Firebase');
+                            resolve({ requiresLogin: false });
+                        }
+                    } else {
+                        resolve({ requiresLogin: true });
+                    }
+                });
+            });
         } catch (error) {
-            console.error('Firebase initialization failed, using local storage fallback:', error);
+            console.error('Firebase initialization failed:', error);
             this.useLocalStorage = true;
             this.isConnected = true;
-            return true;
+            return { requiresLogin: false };
         }
+    }
+
+    // Sign in with password (uses fixed email)
+    async signIn(password) {
+        try {
+            const email = CONFIG.USER_EMAIL;
+            const userCredential = await this.auth.signInWithEmailAndPassword(email, password);
+            this.userId = userCredential.user.uid;
+            this.userEmail = userCredential.user.email;
+            this.useLocalStorage = false;
+            this.isConnected = true;
+            
+            // Store login time
+            localStorage.setItem('lastLoginTime', Date.now().toString());
+            
+            console.log('Signed in successfully');
+            return { success: true };
+        } catch (error) {
+            console.error('Sign in failed:', error);
+            return { success: false, error: error.message };
+        }
+    }
+
+    // Sign out
+    async signOut() {
+        try {
+            await this.auth.signOut();
+            localStorage.removeItem('lastLoginTime');
+            this.userId = null;
+            this.userEmail = null;
+            return { success: true };
+        } catch (error) {
+            console.error('Sign out failed:', error);
+            return { success: false, error: error.message };
+        }
+    }
+
+    // Check if user is authenticated
+    isAuthenticated() {
+        return this.useLocalStorage || (this.auth && this.auth.currentUser);
     }
 
     // =====================
