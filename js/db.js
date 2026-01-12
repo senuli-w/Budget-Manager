@@ -35,6 +35,7 @@ class Database {
                     if (user) {
                         this.userId = user.uid;
                         this.userEmail = user.email;
+                        this.username = user.displayName || null;
                         this.useLocalStorage = false;
                         this.isConnected = true;
                         
@@ -62,26 +63,71 @@ class Database {
         }
     }
 
-    // Sign in with password (uses fixed email)
-    async signIn(pin) {
+    // Convert a username to a stable synthetic email for Firebase Auth.
+    // Firebase Auth requires an email for email/password accounts.
+    usernameToEmail(username) {
+        const cleaned = String(username || '').trim().toLowerCase();
+        // allow letters, numbers, underscore, dot, hyphen
+        const normalized = cleaned.replace(/[^a-z0-9._-]/g, '');
+        if (!normalized || normalized.length < 3) {
+            throw new Error('Username must be at least 3 characters');
+        }
+        if (normalized.length > 32) {
+            throw new Error('Username must be 32 characters or less');
+        }
+        const domain = CONFIG.AUTH_EMAIL_DOMAIN || 'budgetmanager.app';
+        return `${normalized}@${domain}`;
+    }
+
+    async signUp(username, password) {
         try {
-            const email = CONFIG.USER_EMAIL;
-            const credential = pin || CONFIG.USER_PIN;
-            const userCredential = await this.auth.signInWithEmailAndPassword(email, credential);
-            this.userId = userCredential.user.uid;
-            this.userEmail = userCredential.user.email;
+            const email = this.usernameToEmail(username);
+            const userCredential = await this.auth.createUserWithEmailAndPassword(email, password);
+
+            // Store display name for convenience
+            if (userCredential?.user) {
+                await userCredential.user.updateProfile({ displayName: String(username).trim() });
+                this.userId = userCredential.user.uid;
+                this.userEmail = userCredential.user.email;
+                this.username = userCredential.user.displayName;
+            }
+
             this.useLocalStorage = false;
             this.isConnected = true;
-            
-            // Store login time
             localStorage.setItem('lastLoginTime', Date.now().toString());
-            
-            console.log('Signed in successfully');
+            return { success: true };
+        } catch (error) {
+            console.error('Sign up failed:', error);
+            return { success: false, error: this.humanizeAuthError(error) };
+        }
+    }
+
+    async signInWithUsername(username, password) {
+        try {
+            const email = this.usernameToEmail(username);
+            const userCredential = await this.auth.signInWithEmailAndPassword(email, password);
+            this.userId = userCredential.user.uid;
+            this.userEmail = userCredential.user.email;
+            this.username = userCredential.user.displayName || String(username).trim();
+            this.useLocalStorage = false;
+            this.isConnected = true;
+            localStorage.setItem('lastLoginTime', Date.now().toString());
             return { success: true };
         } catch (error) {
             console.error('Sign in failed:', error);
-            return { success: false, error: error.message };
+            return { success: false, error: this.humanizeAuthError(error) };
         }
+    }
+
+    humanizeAuthError(error) {
+        const code = error?.code || '';
+        if (code.includes('auth/email-already-in-use')) return 'Username already exists';
+        if (code.includes('auth/invalid-email')) return 'Invalid username';
+        if (code.includes('auth/weak-password')) return 'Password is too weak';
+        if (code.includes('auth/user-not-found')) return 'Account not found';
+        if (code.includes('auth/wrong-password')) return 'Invalid password';
+        if (code.includes('auth/invalid-credential')) return 'Invalid username or password';
+        return error?.message || 'Authentication failed';
     }
 
     // Sign out
@@ -263,52 +309,129 @@ class Database {
             amount: parseFloat(transaction.amount)
         };
 
-        // Update balances before persisting
-        if (transaction.type === 'income') {
-            await this.updateAccountBalance(transaction.accountId, transaction.amount, 'add');
-        } else if (transaction.type === 'expense') {
-            await this.updateAccountBalance(transaction.accountId, transaction.amount, 'subtract');
-        } else if (transaction.type === 'transfer') {
-            await this.updateAccountBalance(transaction.accountId, transaction.amount, 'subtract');
-            await this.updateAccountBalance(transaction.toAccountId, transaction.amount, 'add');
-        }
-
         if (this.useLocalStorage) {
             const transactions = await this.getTransactions();
             newTransaction._id = this.generateId();
+
+            // Update balances and persist transaction locally
+            const accounts = await this.getAccounts();
+            const fromAcc = accounts.find(a => a._id === transaction.accountId);
+            const toAcc = transaction.type === 'transfer' ? accounts.find(a => a._id === transaction.toAccountId) : null;
+            if (!fromAcc) throw new Error('Account not found');
+
+            const amt = parseFloat(transaction.amount);
+            if (transaction.type === 'income') fromAcc.balance = parseFloat(fromAcc.balance) + amt;
+            if (transaction.type === 'expense') fromAcc.balance = parseFloat(fromAcc.balance) - amt;
+            if (transaction.type === 'transfer') {
+                if (!toAcc) throw new Error('Destination account not found');
+                fromAcc.balance = parseFloat(fromAcc.balance) - amt;
+                toAcc.balance = parseFloat(toAcc.balance) + amt;
+            }
+            localStorage.setItem('budget_accounts', JSON.stringify(accounts));
+
             transactions.push(newTransaction);
             localStorage.setItem('budget_transactions', JSON.stringify(transactions));
             return newTransaction;
         }
 
-        const docRef = await this.firestore
-            .collection(CONFIG.COLLECTIONS.TRANSACTIONS)
-            .add(newTransaction);
-        return { _id: docRef.id, ...newTransaction };
+        // Firestore: atomic balance updates + transaction insert
+        const txRef = this.firestore.collection(CONFIG.COLLECTIONS.TRANSACTIONS).doc();
+        const fromRef = this.firestore.collection(CONFIG.COLLECTIONS.ACCOUNTS).doc(transaction.accountId);
+        const toRef = transaction.type === 'transfer'
+            ? this.firestore.collection(CONFIG.COLLECTIONS.ACCOUNTS).doc(transaction.toAccountId)
+            : null;
+
+        await this.firestore.runTransaction(async (t) => {
+            const fromSnap = await t.get(fromRef);
+            if (!fromSnap.exists) throw new Error('Account not found');
+            if (fromSnap.data()?.userId !== this.userId) throw new Error('Unauthorized');
+
+            const amt = parseFloat(transaction.amount);
+            const fromBalance = parseFloat(fromSnap.data().balance || 0);
+
+            if (transaction.type === 'income') {
+                t.update(fromRef, { balance: fromBalance + amt });
+            } else if (transaction.type === 'expense') {
+                t.update(fromRef, { balance: fromBalance - amt });
+            } else if (transaction.type === 'transfer') {
+                if (!toRef) throw new Error('Destination account required');
+                const toSnap = await t.get(toRef);
+                if (!toSnap.exists) throw new Error('Destination account not found');
+                if (toSnap.data()?.userId !== this.userId) throw new Error('Unauthorized');
+                const toBalance = parseFloat(toSnap.data().balance || 0);
+                t.update(fromRef, { balance: fromBalance - amt });
+                t.update(toRef, { balance: toBalance + amt });
+            }
+
+            t.set(txRef, newTransaction);
+        });
+
+        return { _id: txRef.id, ...newTransaction };
     }
 
     async deleteTransaction(id) {
-        const transactions = await this.getTransactions();
-        const transaction = transactions.find(t => t._id === id);
-
-        if (transaction) {
-            if (transaction.type === 'income') {
-                await this.updateAccountBalance(transaction.accountId, transaction.amount, 'subtract');
-            } else if (transaction.type === 'expense') {
-                await this.updateAccountBalance(transaction.accountId, transaction.amount, 'add');
-            } else if (transaction.type === 'transfer') {
-                await this.updateAccountBalance(transaction.accountId, transaction.amount, 'add');
-                await this.updateAccountBalance(transaction.toAccountId, transaction.amount, 'subtract');
-            }
-        }
-
         if (this.useLocalStorage) {
+            const transactions = await this.getTransactions();
+            const transaction = transactions.find(t => t._id === id);
+
+            if (transaction) {
+                const accounts = await this.getAccounts();
+                const fromAcc = accounts.find(a => a._id === transaction.accountId);
+                const toAcc = transaction.type === 'transfer' ? accounts.find(a => a._id === transaction.toAccountId) : null;
+                if (fromAcc) {
+                    const amt = parseFloat(transaction.amount);
+                    if (transaction.type === 'income') fromAcc.balance = parseFloat(fromAcc.balance) - amt;
+                    if (transaction.type === 'expense') fromAcc.balance = parseFloat(fromAcc.balance) + amt;
+                    if (transaction.type === 'transfer' && toAcc) {
+                        fromAcc.balance = parseFloat(fromAcc.balance) + amt;
+                        toAcc.balance = parseFloat(toAcc.balance) - amt;
+                    }
+                    localStorage.setItem('budget_accounts', JSON.stringify(accounts));
+                }
+            }
+
             const filtered = transactions.filter(t => t._id !== id);
             localStorage.setItem('budget_transactions', JSON.stringify(filtered));
             return true;
         }
 
-        await this.firestore.collection(CONFIG.COLLECTIONS.TRANSACTIONS).doc(id).delete();
+        // Firestore: atomic undo balance changes + delete transaction
+        const txDocRef = this.firestore.collection(CONFIG.COLLECTIONS.TRANSACTIONS).doc(id);
+        await this.firestore.runTransaction(async (t) => {
+            const txSnap = await t.get(txDocRef);
+            if (!txSnap.exists) throw new Error('Transaction not found');
+            const txData = txSnap.data();
+            if (txData?.userId !== this.userId) throw new Error('Unauthorized');
+
+            const fromRef = this.firestore.collection(CONFIG.COLLECTIONS.ACCOUNTS).doc(txData.accountId);
+            const toRef = txData.type === 'transfer'
+                ? this.firestore.collection(CONFIG.COLLECTIONS.ACCOUNTS).doc(txData.toAccountId)
+                : null;
+
+            const fromSnap = await t.get(fromRef);
+            if (!fromSnap.exists) throw new Error('Account not found');
+            if (fromSnap.data()?.userId !== this.userId) throw new Error('Unauthorized');
+
+            const amt = parseFloat(txData.amount);
+            const fromBalance = parseFloat(fromSnap.data().balance || 0);
+
+            if (txData.type === 'income') {
+                t.update(fromRef, { balance: fromBalance - amt });
+            } else if (txData.type === 'expense') {
+                t.update(fromRef, { balance: fromBalance + amt });
+            } else if (txData.type === 'transfer') {
+                if (!toRef) throw new Error('Destination account missing');
+                const toSnap = await t.get(toRef);
+                if (!toSnap.exists) throw new Error('Destination account not found');
+                if (toSnap.data()?.userId !== this.userId) throw new Error('Unauthorized');
+                const toBalance = parseFloat(toSnap.data().balance || 0);
+                t.update(fromRef, { balance: fromBalance + amt });
+                t.update(toRef, { balance: toBalance - amt });
+            }
+
+            t.delete(txDocRef);
+        });
+
         return true;
     }
 

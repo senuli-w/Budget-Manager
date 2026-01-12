@@ -5,7 +5,7 @@ A beautiful, simple, and secure budget management app that works on your phone, 
 ## ✨ Key Features
 
 - 📱 **Install on Home Screen** - Works like a native app
-- 🔐 **Secure** - PIN-protected with encrypted data
+- 🔐 **Secure** - Username + password protected
 - 🌐 **Works Offline** - Full functionality without internet
 - 📊 **Analytics** - Beautiful charts and summaries
 - 🔄 **Sync Everywhere** - Same data across all devices
@@ -17,8 +17,8 @@ A beautiful, simple, and secure budget management app that works on your phone, 
 ### 1. Visit the App
 Go to: https://senuli-w.github.io/Budget-Manager/
 
-### 2. Enter the PIN
-Use PIN **1644** (the shared password) to unlock the app on every device. Follow [SETUP.md](SETUP.md) to ensure the Firebase user exists with that PIN.
+### 2. Login / Signup
+Create an account with a username + password, then use the same credentials on every device. See [SETUP.md](SETUP.md).
 
 ### 3. Install on Home Screen
 - **iPhone**: Share → Add to Home Screen
@@ -37,7 +37,7 @@ Add accounts → Add transactions → Track your money
 
 - **Frontend**: HTML5, CSS3, JavaScript (ES6+)
 - **Database**: Firebase Firestore
-- **Auth**: Firebase Authentication (Email + shared PIN)
+- **Auth**: Firebase Authentication (Username mapped to email)
 - **Charts**: Chart.js
 - **Icons**: Bootstrap Icons
 - **Hosting**: GitHub Pages (or Vercel/Netlify)
@@ -79,7 +79,7 @@ Add accounts → Add transactions → Track your money
 
 ## 🔐 Security
 
-- ✅ PIN-protected authentication
+- ✅ Username + password authentication
 - ✅ End-to-end encrypted with Firebase
 - ✅ No personal data tracking
 - ✅ 7-day session timeout for extra security

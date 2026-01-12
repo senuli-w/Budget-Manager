@@ -1,18 +1,18 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Only the authenticated user can access their own data
-    match /{collection}/{document} {
-      allow read, write: if request.auth != null 
-                       && request.auth.token.email == 'user@budgetmanager.app'
-                       && resource.data.userId == request.auth.uid;
+    function signedIn() {
+      return request.auth != null;
     }
-    
-    // Allow creating new documents with the correct userId
-    match /{collection}/{document} {
-      allow create: if request.auth != null 
-                   && request.auth.token.email == 'user@budgetmanager.app'
-                   && request.resource.data.userId == request.auth.uid;
+
+    // Multi-user rules: each document is owned by its userId
+    match /{document=**} {
+      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
+      allow read: if signedIn() && resource.data.userId == request.auth.uid;
+      allow update: if signedIn()
+                    && resource.data.userId == request.auth.uid
+                    && request.resource.data.userId == request.auth.uid;
+      allow delete: if signedIn() && resource.data.userId == request.auth.uid;
     }
   }
 }

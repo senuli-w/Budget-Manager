@@ -34,14 +34,22 @@
                 <p>Manage your finances with ease</p>
             </div>
             
-            <form class="login-form" onsubmit="handleLogin(event)">
+            <form class="login-form" onsubmit="handleAuth(event)">
                 <div class="form-group">
-                    <label for="pinInput">PIN</label>
-                    <input type="password" id="pinInput" class="form-input" minlength="4" maxlength="4" placeholder="Enter your 4-digit PIN" required autofocus>
-                    <small class="form-hint">Use your personal PIN to unlock the app on every device.</small>
+                    <label for="usernameInput">Username</label>
+                    <input type="text" id="usernameInput" class="form-input" placeholder="Enter your username" autocomplete="username" required autofocus>
                 </div>
-                <button type="submit" class="btn-primary">Login</button>
+                <div class="form-group">
+                    <label for="passwordInput">Password</label>
+                    <input type="password" id="passwordInput" class="form-input" placeholder="Enter your password" autocomplete="current-password" required>
+                    <small class="form-hint" id="authHint">Login with your existing account.</small>
+                </div>
+                <button type="submit" class="btn-primary" id="authSubmitBtn">Login</button>
             </form>
+
+            <div style="margin-top: 10px;">
+                <button type="button" class="btn-primary" style="background: var(--gray-900);" onclick="toggleAuthMode()" id="authToggleBtn">Create account</button>
+            </div>
             
             <p class="login-footer">Your data is encrypted and synced securely</p>
         </div>
@@ -281,6 +289,24 @@
                 </div>
                 <button type="submit" class="btn-primary">Add Account</button>
             </form>
+        </div>
+    </div>
+
+    <!-- Transaction Details Modal -->
+    <div id="transactionDetailsModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Transaction Details</h2>
+                <button class="btn-icon" onclick="closeModal('transactionDetailsModal')">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+            <div class="modal-form" id="transactionDetailsBody">
+                <!-- Dynamically populated -->
+            </div>
+            <div style="padding: 0 24px 24px;">
+                <button type="button" class="btn-primary" style="background: var(--danger);" onclick="confirmDeleteActiveTransaction()">Delete Transaction</button>
+            </div>
         </div>
     </div>
 

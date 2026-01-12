@@ -7,6 +7,9 @@ let accounts = [];
 let transactions = [];
 let allTransactions = [];
 
+let authMode = 'login'; // 'login' | 'signup'
+let activeTransactionId = null;
+
 // Register service worker for PWA functionality
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
@@ -29,7 +32,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (initResult.requiresLogin) {
       document.getElementById('loginScreen').style.display = 'flex';
       document.getElementById('mainApp').style.display = 'none';
-      document.getElementById('pinInput').focus();
+      document.getElementById('usernameInput')?.focus();
       return;
     }
 
@@ -84,38 +87,70 @@ async function loadAppData() {
 
 // ==================== AUTH HANDLERS ====================
 
-async function handleLogin(event) {
+function toggleAuthMode() {
+  authMode = authMode === 'login' ? 'signup' : 'login';
+
+  const hint = document.getElementById('authHint');
+  const submitBtn = document.getElementById('authSubmitBtn');
+  const toggleBtn = document.getElementById('authToggleBtn');
+  const passwordEl = document.getElementById('passwordInput');
+
+  if (authMode === 'signup') {
+    if (hint) hint.textContent = 'Create a new account with a username and password.';
+    if (submitBtn) submitBtn.textContent = 'Sign up';
+    if (toggleBtn) toggleBtn.textContent = 'I already have an account';
+    if (passwordEl) passwordEl.autocomplete = 'new-password';
+  } else {
+    if (hint) hint.textContent = 'Login with your existing account.';
+    if (submitBtn) submitBtn.textContent = 'Login';
+    if (toggleBtn) toggleBtn.textContent = 'Create account';
+    if (passwordEl) passwordEl.autocomplete = 'current-password';
+  }
+}
+
+async function handleAuth(event) {
   event.preventDefault();
-  
-  const pin = document.getElementById('pinInput').value;
-  const btn = event.target.querySelector('button');
-  const originalText = btn.textContent;
 
+  const username = document.getElementById('usernameInput')?.value?.trim() || '';
+  const password = document.getElementById('passwordInput')?.value || '';
+  const submitBtn = document.getElementById('authSubmitBtn');
+  const toggleBtn = document.getElementById('authToggleBtn');
+
+  if (!username || !password) {
+    showToast('Please enter username and password', 'error');
+    return;
+  }
+
+  const originalSubmit = submitBtn?.textContent;
   try {
-    btn.textContent = 'Logging in...';
-    btn.disabled = true;
+    if (submitBtn) {
+      submitBtn.textContent = authMode === 'signup' ? 'Creating...' : 'Logging in...';
+      submitBtn.disabled = true;
+    }
+    if (toggleBtn) toggleBtn.disabled = true;
 
-    const result = await db.signIn(pin);
+    const result = authMode === 'signup'
+      ? await db.signUp(username, password)
+      : await db.signInWithUsername(username, password);
 
     if (result?.success) {
-      document.getElementById('pinInput').value = '';
+      if (document.getElementById('passwordInput')) document.getElementById('passwordInput').value = '';
       await loadAppData();
       showMainApp();
-      showToast('Welcome back!');
+      showToast(authMode === 'signup' ? 'Account created!' : 'Welcome back!');
     } else {
-      const isWrongPassword = result.error?.toLowerCase().includes('wrong-password');
-      const message = isWrongPassword
-        ? 'Invalid PIN – make sure the Firebase user password matches your PIN per SETUP.md'
-        : 'Invalid PIN';
-      showToast(message, 'error');
-      document.getElementById('pinInput').focus();
+      showToast(result?.error || 'Authentication failed', 'error');
+      document.getElementById('passwordInput')?.focus();
     }
   } catch (error) {
-    console.error('Login error:', error);
-    showToast('Login failed. Please try again.', 'error');
+    console.error('Auth error:', error);
+    showToast('Authentication failed. Please try again.', 'error');
   } finally {
-    btn.textContent = originalText;
-    btn.disabled = false;
+    if (submitBtn) {
+      submitBtn.textContent = originalSubmit || (authMode === 'signup' ? 'Sign up' : 'Login');
+      submitBtn.disabled = false;
+    }
+    if (toggleBtn) toggleBtn.disabled = false;
   }
 }
 
@@ -126,8 +161,8 @@ async function handleLogout() {
     await db.signOut();
     document.getElementById('mainApp').style.display = 'none';
     document.getElementById('loginScreen').style.display = 'flex';
-    document.getElementById('pinInput').value = '';
-    document.getElementById('pinInput').focus();
+    document.getElementById('passwordInput') && (document.getElementById('passwordInput').value = '');
+    document.getElementById('usernameInput')?.focus();
     accounts = [];
     transactions = [];
   } catch (error) {
@@ -410,7 +445,7 @@ function renderTransactions(txns = transactions) {
   const sorted = [...txns].sort((a, b) => new Date(b.date) - new Date(a.date));
 
   container.innerHTML = sorted.length ? sorted.map(txn => `
-    <div class="transaction-item">
+    <div class="transaction-item" data-txn-id="${txn._id}" onclick="openTransactionDetails('${txn._id}')">
       <div class="transaction-icon ${txn.type}">
         ${getTransactionIcon(txn.type)}
       </div>
@@ -423,6 +458,66 @@ function renderTransactions(txns = transactions) {
       </div>
     </div>
   `).join('') : '<p style="color: var(--gray-500); text-align: center; padding: 20px;">No transactions</p>';
+}
+
+function openTransactionDetails(txnId) {
+  const txn = allTransactions.find(t => t._id === txnId);
+  if (!txn) return;
+  activeTransactionId = txnId;
+
+  const body = document.getElementById('transactionDetailsBody');
+  const fromName = getAccountNameById(txn.accountId);
+  const toName = txn.type === 'transfer' ? getAccountNameById(txn.toAccountId) : null;
+  const categoryName = txn.type === 'income'
+    ? getIncomeCategoryName(txn.category)
+    : txn.type === 'expense'
+      ? getExpenseCategoryName(txn.category)
+      : 'Transfer';
+
+  const rows = [
+    ['Type', txn.type.charAt(0).toUpperCase() + txn.type.slice(1)],
+    ['Amount', formatCurrency(txn.amount)],
+    ['Category', categoryName],
+    ['From Account', fromName],
+    ...(txn.type === 'transfer' ? [['To Account', toName]] : []),
+    ['Date', formatDate(txn.date)],
+    ['Note', txn.note?.trim() ? txn.note : '—'],
+  ];
+
+  if (body) {
+    body.innerHTML = rows.map(([label, value]) => `
+      <div style="display:flex; justify-content:space-between; gap:16px; padding:10px 0; border-bottom:1px solid var(--gray-200);">
+        <div style="color: var(--gray-600); font-weight:600;">${label}</div>
+        <div style="color: var(--gray-900); text-align:right;">${escapeHtml(String(value))}</div>
+      </div>
+    `).join('');
+  }
+
+  document.getElementById('transactionDetailsModal').style.display = 'flex';
+}
+
+async function confirmDeleteActiveTransaction() {
+  if (!activeTransactionId) return;
+  if (!confirm('Delete this transaction? This will undo the balance change.')) return;
+
+  try {
+    await db.deleteTransaction(activeTransactionId);
+    accounts = (await db.getAccounts()) || [];
+    transactions = (await db.getTransactions()) || [];
+    allTransactions = [...transactions];
+
+    populateAccountSelects();
+    populateAccountFilters();
+    updateDashboard();
+    renderTransactions(transactions);
+    closeModal('transactionDetailsModal');
+    showToast('Transaction deleted');
+  } catch (error) {
+    console.error('Delete transaction failed:', error);
+    showToast('Failed to delete transaction', 'error');
+  } finally {
+    activeTransactionId = null;
+  }
 }
 
 function getTransactionIcon(type) {
@@ -625,6 +720,15 @@ function showToast(message, type = 'success') {
   setTimeout(() => {
     toast.style.display = 'none';
   }, 3000);
+}
+
+function escapeHtml(str) {
+  return str
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
 }
 
 function getAccountNameById(accountId) {
