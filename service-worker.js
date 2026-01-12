@@ -1,6 +1,6 @@
 // Service Worker for Budget Manager PWA
 
-const CACHE_VERSION = 'v1.0.1';
+const CACHE_VERSION = 'v1.0.2';
 const CACHE_NAME = `budget-manager-${CACHE_VERSION}`;
 const urlsToCache = [
   './',

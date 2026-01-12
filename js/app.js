@@ -10,6 +10,27 @@ let allTransactions = [];
 let authMode = 'login'; // 'login' | 'signup'
 let activeTransactionId = null;
 
+function setAuthMode(mode) {
+  authMode = mode === 'signup' ? 'signup' : 'login';
+
+  const hint = document.getElementById('authHint');
+  const submitBtn = document.getElementById('authSubmitBtn');
+  const toggleBtn = document.getElementById('authToggleBtn');
+  const passwordEl = document.getElementById('passwordInput');
+
+  if (authMode === 'signup') {
+    if (hint) hint.textContent = 'Create a new account with a username and password.';
+    if (submitBtn) submitBtn.textContent = 'Sign up';
+    if (toggleBtn) toggleBtn.textContent = 'I already have an account';
+    if (passwordEl) passwordEl.autocomplete = 'new-password';
+  } else {
+    if (hint) hint.textContent = 'Login with your existing account.';
+    if (submitBtn) submitBtn.textContent = 'Login';
+    if (toggleBtn) toggleBtn.textContent = 'Create account';
+    if (passwordEl) passwordEl.autocomplete = 'current-password';
+  }
+}
+
 // Register service worker for PWA functionality
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
@@ -22,6 +43,11 @@ if ('serviceWorker' in navigator) {
 // Initialize app on load
 document.addEventListener('DOMContentLoaded', async () => {
   try {
+    // Default landing state: auth screen (unless already authenticated)
+    document.getElementById('loginScreen').style.display = 'flex';
+    document.getElementById('mainApp').style.display = 'none';
+    setAuthMode('login');
+
     // Set current date
     updateCurrentDate();
 
@@ -88,24 +114,7 @@ async function loadAppData() {
 // ==================== AUTH HANDLERS ====================
 
 function toggleAuthMode() {
-  authMode = authMode === 'login' ? 'signup' : 'login';
-
-  const hint = document.getElementById('authHint');
-  const submitBtn = document.getElementById('authSubmitBtn');
-  const toggleBtn = document.getElementById('authToggleBtn');
-  const passwordEl = document.getElementById('passwordInput');
-
-  if (authMode === 'signup') {
-    if (hint) hint.textContent = 'Create a new account with a username and password.';
-    if (submitBtn) submitBtn.textContent = 'Sign up';
-    if (toggleBtn) toggleBtn.textContent = 'I already have an account';
-    if (passwordEl) passwordEl.autocomplete = 'new-password';
-  } else {
-    if (hint) hint.textContent = 'Login with your existing account.';
-    if (submitBtn) submitBtn.textContent = 'Login';
-    if (toggleBtn) toggleBtn.textContent = 'Create account';
-    if (passwordEl) passwordEl.autocomplete = 'current-password';
-  }
+  setAuthMode(authMode === 'login' ? 'signup' : 'login');
 }
 
 async function handleAuth(event) {
