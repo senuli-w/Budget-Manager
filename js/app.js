@@ -1,3 +1,742 @@
+// Budget Manager - App logic (rewritten to stabilize auth, data, and UI wiring)
+
+let accounts = [];
+let transactions = [];
+let allTransactions = [];
+let authMode = 'login';
+let activeTransactionId = null;
+
+// Register service worker for PWA functionality
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('service-worker.js').catch(() => {
+      // Ignore registration failures; app still works online
+    });
+  });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  setAuthMode('login');
+  showLoginScreen();
+  updateCurrentDate();
+  bindFormListeners();
+  bootstrapApp();
+});
+
+async function bootstrapApp() {
+  try {
+    const initResult = await db.init();
+
+    if (initResult?.requiresLogin) {
+      showLoginScreen();
+      document.getElementById('usernameInput')?.focus();
+      return;
+    }
+
+    await reloadData();
+    showMainApp();
+
+    const section = new URLSearchParams(window.location.search).get('section');
+    if (section) setActiveSection(section);
+  } catch (error) {
+    console.error('Initialization error:', error);
+    showToast('Failed to initialize. Check your connection and Firebase setup.', 'error');
+  }
+}
+
+// ==================== AUTH ====================
+
+function setAuthMode(mode) {
+  authMode = mode === 'signup' ? 'signup' : 'login';
+
+  const hint = document.getElementById('authHint');
+  const submitBtn = document.getElementById('authSubmitBtn');
+  const toggleBtn = document.getElementById('authToggleBtn');
+  const passwordEl = document.getElementById('passwordInput');
+
+  if (authMode === 'signup') {
+    if (hint) hint.textContent = 'Create a new account with a username and password.';
+    if (submitBtn) submitBtn.textContent = 'Sign up';
+    if (toggleBtn) toggleBtn.textContent = 'I already have an account';
+    if (passwordEl) passwordEl.autocomplete = 'new-password';
+  } else {
+    if (hint) hint.textContent = 'Login with your existing account.';
+    if (submitBtn) submitBtn.textContent = 'Login';
+    if (toggleBtn) toggleBtn.textContent = 'Create account';
+    if (passwordEl) passwordEl.autocomplete = 'current-password';
+  }
+}
+
+function toggleAuthMode() {
+  setAuthMode(authMode === 'login' ? 'signup' : 'login');
+}
+
+async function handleAuth(event) {
+  event.preventDefault();
+
+  const username = document.getElementById('usernameInput')?.value?.trim() || '';
+  const password = document.getElementById('passwordInput')?.value || '';
+  const submitBtn = document.getElementById('authSubmitBtn');
+  const toggleBtn = document.getElementById('authToggleBtn');
+
+  if (!username || !password) {
+    showToast('Please enter username and password', 'error');
+    return;
+  }
+
+  const originalSubmit = submitBtn?.textContent;
+  try {
+    if (submitBtn) {
+      submitBtn.textContent = authMode === 'signup' ? 'Creating...' : 'Logging in...';
+      submitBtn.disabled = true;
+    }
+    if (toggleBtn) toggleBtn.disabled = true;
+
+    const result = authMode === 'signup'
+      ? await db.signUp(username, password)
+      : await db.signInWithUsername(username, password);
+
+    if (result?.success) {
+      if (document.getElementById('passwordInput')) document.getElementById('passwordInput').value = '';
+      await reloadData();
+      showMainApp();
+      showToast(authMode === 'signup' ? 'Account created!' : 'Welcome back!');
+    } else {
+      showToast(result?.error || 'Authentication failed', 'error');
+      document.getElementById('passwordInput')?.focus();
+    }
+  } catch (error) {
+    console.error('Auth error:', error);
+    showToast('Authentication failed. Please try again.', 'error');
+  } finally {
+    if (submitBtn) {
+      submitBtn.textContent = originalSubmit || (authMode === 'signup' ? 'Sign up' : 'Login');
+      submitBtn.disabled = false;
+    }
+    if (toggleBtn) toggleBtn.disabled = false;
+  }
+}
+
+async function handleLogout() {
+  if (!confirm('Are you sure you want to logout?')) return;
+
+  try {
+    await db.signOut();
+    accounts = [];
+    transactions = [];
+    allTransactions = [];
+    setAuthMode('login');
+    showLoginScreen();
+    document.getElementById('passwordInput') && (document.getElementById('passwordInput').value = '');
+    document.getElementById('usernameInput')?.focus();
+  } catch (error) {
+    console.error('Logout error:', error);
+    showToast('Logout failed', 'error');
+  }
+}
+
+// ==================== DATA LOADING ====================
+
+async function reloadData() {
+  setLoading(true);
+  try {
+    const [fetchedAccounts, fetchedTransactions] = await Promise.all([
+      db.getAccounts(),
+      db.getTransactions()
+    ]);
+
+    accounts = fetchedAccounts || [];
+    transactions = fetchedTransactions || [];
+    allTransactions = [...transactions];
+
+    populateAccountSelects();
+    populateAccountFilters();
+    updateDashboard();
+    renderTransactions(transactions);
+    renderAccounts();
+
+    const txnDateEl = document.getElementById('txnDate');
+    if (txnDateEl && !txnDateEl.value) txnDateEl.valueAsDate = new Date();
+
+    syncTransactionFormForType(getSelectedTxnType());
+  } catch (error) {
+    console.error('Error loading data:', error);
+    showToast('Failed to load data. Please retry.', 'error');
+  } finally {
+    setLoading(false);
+  }
+}
+
+// ==================== NAVIGATION ====================
+
+function showLoginScreen() {
+  document.getElementById('loginScreen').style.display = 'flex';
+  document.getElementById('mainApp').style.display = 'none';
+}
+
+function showMainApp() {
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('mainApp').style.display = 'flex';
+  updateDashboard();
+}
+
+function switchSection(event, sectionId) {
+  const tab = event?.target?.closest?.('.nav-tab');
+  setActiveSection(sectionId, tab);
+}
+
+function setActiveSection(sectionId, activeTabEl = null) {
+  document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
+  if (activeTabEl) {
+    activeTabEl.classList.add('active');
+  } else {
+    const tabBySection = document.querySelector(`.nav-tab[data-section="${CSS.escape(sectionId)}"]`);
+    if (tabBySection) tabBySection.classList.add('active');
+  }
+
+  document.querySelectorAll('.section').forEach(sec => sec.classList.remove('active'));
+  const sectionEl = document.getElementById(sectionId);
+  if (sectionEl) sectionEl.classList.add('active');
+
+  if (sectionId === 'dashboard') updateDashboard();
+  if (sectionId === 'transactions') renderTransactions(transactions);
+}
+
+// ==================== DASHBOARD ====================
+
+function updateCurrentDate() {
+  const options = { weekday: 'short', month: 'short', day: 'numeric' };
+  const dateStr = new Date().toLocaleDateString('en-US', options);
+  const dateEl = document.getElementById('currentDate');
+  if (dateEl) dateEl.textContent = dateStr;
+}
+
+function updateDashboard() {
+  const now = new Date();
+  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+  let totalBalance = 0;
+  let monthIncome = 0;
+  let monthExpenses = 0;
+
+  accounts.forEach(account => {
+    totalBalance += Number(account.balance || 0);
+  });
+
+  transactions.forEach(txn => {
+    const txnMonth = (txn.date || '').substring(0, 7);
+    if (txnMonth === currentMonth) {
+      if (txn.type === 'income') monthIncome += Number(txn.amount || 0);
+      if (txn.type === 'expense') monthExpenses += Number(txn.amount || 0);
+    }
+  });
+
+  const totalEl = document.getElementById('totalBalance');
+  const incomeEl = document.getElementById('monthIncome');
+  const expenseEl = document.getElementById('monthExpenses');
+  if (totalEl) totalEl.textContent = formatCurrency(totalBalance);
+  if (incomeEl) incomeEl.textContent = formatCurrency(monthIncome);
+  if (expenseEl) expenseEl.textContent = formatCurrency(monthExpenses);
+
+  updateCharts();
+  renderDashboardAccounts();
+  renderDashboardTransactions();
+}
+
+function updateCharts() {
+  const categoryCtx = document.getElementById('accountsChart')?.getContext('2d');
+  if (categoryCtx) {
+    if (window.accountsChartInstance) window.accountsChartInstance.destroy();
+
+    const now = new Date();
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+    const totalsByCategory = new Map();
+    transactions
+      .filter(t => t.type === 'expense' && (t.date || '').startsWith(currentMonth))
+      .forEach(t => {
+        const catId = t.category || 'other_expense';
+        totalsByCategory.set(catId, (totalsByCategory.get(catId) || 0) + Number(t.amount || 0));
+      });
+
+    const sorted = [...totalsByCategory.entries()]
+      .filter(([, total]) => total > 0)
+      .sort((a, b) => b[1] - a[1]);
+
+    const labels = sorted.map(([catId]) => getExpenseCategoryName(catId));
+    const data = sorted.map(([, total]) => total);
+    const colors = sorted.map(([catId], idx) => getExpenseCategoryColor(catId, idx));
+
+    window.accountsChartInstance = new Chart(categoryCtx, {
+      type: 'doughnut',
+      data: {
+        labels,
+        datasets: [{ data, backgroundColor: colors, borderWidth: 0 }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: { legend: { position: 'bottom' } }
+      }
+    });
+  }
+
+  const incomeCtx = document.getElementById('incomeExpenseChart')?.getContext('2d');
+  if (incomeCtx) {
+    if (window.incomeChartInstance) window.incomeChartInstance.destroy();
+
+    const now = new Date();
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+    let income = 0;
+    let expense = 0;
+    transactions.forEach(txn => {
+      if ((txn.date || '').substring(0, 7) === currentMonth) {
+        if (txn.type === 'income') income += Number(txn.amount || 0);
+        if (txn.type === 'expense') expense += Number(txn.amount || 0);
+      }
+    });
+
+    window.incomeChartInstance = new Chart(incomeCtx, {
+      type: 'bar',
+      data: {
+        labels: ['Income', 'Expenses'],
+        datasets: [{
+          label: 'Amount',
+          data: [income, expense],
+          backgroundColor: ['#10b981', '#ef4444'],
+          borderWidth: 0,
+          borderRadius: 8
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        indexAxis: 'y',
+        plugins: { legend: { display: false } },
+        scales: { x: { beginAtZero: true } }
+      }
+    });
+  }
+}
+
+function renderDashboardAccounts() {
+  const container = document.getElementById('dashboardAccounts');
+  if (!container) return;
+
+  container.innerHTML = accounts.length ? accounts.map(account => `
+    <div class="account-item">
+      <div class="account-info">
+        <div class="account-name">${escapeHtml(account.name)}</div>
+        <div class="account-type">${escapeHtml(account.type || 'Account')}</div>
+      </div>
+      <div class="account-balance">${formatCurrency(account.balance)}</div>
+    </div>
+  `).join('') : '<p style="color: var(--gray-500); text-align: center; padding: 20px;">No accounts yet</p>';
+}
+
+function renderDashboardTransactions() {
+  const container = document.getElementById('dashboardTransactions');
+  if (!container) return;
+
+  const recent = [...transactions]
+    .sort((a, b) => new Date(b.date) - new Date(a.date))
+    .slice(0, 5);
+
+  container.innerHTML = recent.length ? recent.map(txn => `
+    <div class="transaction-item">
+      <div class="transaction-icon ${txn.type}">
+        ${getTransactionIcon(txn.type)}
+      </div>
+      <div class="transaction-info">
+        <div class="transaction-category">${escapeHtml(getTransactionTitle(txn))}</div>
+        <div class="transaction-date">${formatDate(txn.date)}</div>
+      </div>
+      <div class="transaction-amount ${txn.type}">
+        ${txn.type === 'income' ? '+' : txn.type === 'expense' ? '−' : '→'} ${formatCurrency(txn.amount)}
+      </div>
+    </div>
+  `).join('') : '<p style="color: var(--gray-500); text-align: center; padding: 20px;">No transactions yet</p>';
+}
+
+// ==================== TRANSACTIONS ====================
+
+async function handleAddTransaction(event) {
+  event.preventDefault();
+
+  const type = getSelectedTxnType();
+  const amount = Number(document.getElementById('txnAmount').value);
+  const category = document.getElementById('txnCategory').value;
+  const accountId = document.getElementById('txnAccount').value;
+  const toAccountId = document.getElementById('txnToAccount').value;
+  const date = document.getElementById('txnDate').value;
+  const note = document.getElementById('txnNote').value;
+
+  if (!type || !amount || !accountId || !date) {
+    showToast('Please fill all required fields', 'error');
+    return;
+  }
+
+  if ((type === 'income' || type === 'expense') && !category) {
+    showToast('Please select a category', 'error');
+    return;
+  }
+
+  if (type === 'transfer') {
+    if (!toAccountId) {
+      showToast('Please select a destination account', 'error');
+      return;
+    }
+    if (toAccountId === accountId) {
+      showToast('From and To accounts must be different', 'error');
+      return;
+    }
+  }
+
+  const payload = {
+    type,
+    amount,
+    category: type === 'transfer' ? null : category,
+    accountId,
+    toAccountId: type === 'transfer' ? toAccountId : null,
+    date,
+    note
+  };
+
+  try {
+    await db.addTransaction(payload);
+    await reloadData();
+
+    event.target.reset();
+    const txnDateEl = document.getElementById('txnDate');
+    if (txnDateEl) txnDateEl.valueAsDate = new Date();
+    syncTransactionFormForType(type);
+
+    showToast('Transaction added!');
+    setActiveSection('dashboard');
+  } catch (error) {
+    console.error('Error adding transaction:', error);
+    showToast(error?.message || 'Could not add transaction. Check Firestore rules and try again.', 'error');
+  }
+}
+
+function renderTransactions(txns = transactions) {
+  const container = document.getElementById('transactionsList');
+  if (!container) return;
+
+  const sorted = [...txns].sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  container.innerHTML = sorted.length ? sorted.map(txn => `
+    <div class="transaction-item" data-txn-id="${txn._id}" onclick="openTransactionDetails('${txn._id}')">
+      <div class="transaction-icon ${txn.type}">
+        ${getTransactionIcon(txn.type)}
+      </div>
+      <div class="transaction-info">
+        <div class="transaction-category">${escapeHtml(getTransactionTitle(txn))}</div>
+        <div class="transaction-date">${formatDate(txn.date)}</div>
+      </div>
+      <div class="transaction-amount ${txn.type}">
+        ${txn.type === 'income' ? '+' : txn.type === 'expense' ? '−' : '→'} ${formatCurrency(txn.amount)}
+      </div>
+    </div>
+  `).join('') : '<p style="color: var(--gray-500); text-align: center; padding: 20px;">No transactions</p>';
+}
+
+function openTransactionDetails(txnId) {
+  const txn = allTransactions.find(t => t._id === txnId);
+  if (!txn) return;
+  activeTransactionId = txnId;
+
+  const body = document.getElementById('transactionDetailsBody');
+  const fromName = getAccountNameById(txn.accountId);
+  const toName = txn.type === 'transfer' ? getAccountNameById(txn.toAccountId) : null;
+  const categoryName = txn.type === 'income'
+    ? getIncomeCategoryName(txn.category)
+    : txn.type === 'expense'
+      ? getExpenseCategoryName(txn.category)
+      : 'Transfer';
+
+  const rows = [
+    ['Type', txn.type.charAt(0).toUpperCase() + txn.type.slice(1)],
+    ['Amount', formatCurrency(txn.amount)],
+    ['Category', categoryName],
+    ['From Account', fromName],
+    ...(txn.type === 'transfer' ? [['To Account', toName]] : []),
+    ['Date', formatDate(txn.date)],
+    ['Note', txn.note?.trim() ? txn.note : '—'],
+  ];
+
+  if (body) {
+    body.innerHTML = rows.map(([label, value]) => `
+      <div style="display:flex; justify-content:space-between; gap:16px; padding:10px 0; border-bottom:1px solid var(--gray-200);">
+        <div style="color: var(--gray-600); font-weight:600;">${escapeHtml(label)}</div>
+        <div style="color: var(--gray-900); text-align:right;">${escapeHtml(String(value))}</div>
+      </div>
+    `).join('');
+  }
+
+  document.getElementById('transactionDetailsModal').style.display = 'flex';
+}
+
+async function confirmDeleteActiveTransaction() {
+  if (!activeTransactionId) return;
+  if (!confirm('Delete this transaction? This will undo the balance change.')) return;
+
+  try {
+    await db.deleteTransaction(activeTransactionId);
+    await reloadData();
+    closeModal('transactionDetailsModal');
+    showToast('Transaction deleted');
+  } catch (error) {
+    console.error('Delete transaction failed:', error);
+    showToast(error?.message || 'Failed to delete transaction', 'error');
+  } finally {
+    activeTransactionId = null;
+  }
+}
+
+function getTransactionIcon(type) {
+  switch (type) {
+    case 'income': return '<i class="bi bi-graph-up"></i>';
+    case 'expense': return '<i class="bi bi-graph-down"></i>';
+    case 'transfer': return '<i class="bi bi-arrow-left-right"></i>';
+    default: return '<i class="bi bi-circle"></i>';
+  }
+}
+
+function applyFilters() {
+  const accountFilter = document.getElementById('filterAccount')?.value || '';
+  const typeFilter = document.getElementById('filterType')?.value || '';
+
+  let filtered = allTransactions;
+
+  if (accountFilter) {
+    filtered = filtered.filter(t => t.accountId === accountFilter || t.toAccountId === accountFilter);
+  }
+  if (typeFilter) {
+    filtered = filtered.filter(t => t.type === typeFilter);
+  }
+
+  renderTransactions(filtered);
+}
+
+// ==================== ACCOUNTS ====================
+
+function renderAccounts() {
+  const container = document.getElementById('accountsList');
+  if (!container) return;
+
+  container.innerHTML = accounts.length ? accounts.map(account => `
+    <div class="account-item">
+      <div class="account-info">
+        <div class="account-name">${escapeHtml(account.name)}</div>
+        <div class="account-type">${escapeHtml(account.type || 'Account')}</div>
+      </div>
+      <div class="account-balance">${formatCurrency(account.balance)}</div>
+    </div>
+  `).join('') : '<p style="color: var(--gray-500); text-align: center; padding: 20px;">No accounts yet. Add one!</p>';
+}
+
+function showAddAccountModal() {
+  document.getElementById('addAccountModal').style.display = 'flex';
+  document.getElementById('accountName').focus();
+}
+
+function closeModal(modalId) {
+  document.getElementById(modalId).style.display = 'none';
+}
+
+async function handleAddAccount(event) {
+  event.preventDefault();
+
+  const name = document.getElementById('accountName').value.trim();
+  const type = document.getElementById('accountType').value;
+  const balance = parseFloat(document.getElementById('accountBalance').value) || 0;
+
+  if (!name || !type) {
+    showToast('Please fill all required fields', 'error');
+    return;
+  }
+
+  try {
+    await db.addAccount({ name, type, balance });
+    await reloadData();
+
+    event.target.reset();
+    closeModal('addAccountModal');
+
+    showToast('Account added!');
+  } catch (error) {
+    console.error('Error adding account:', error);
+    showToast(error?.message || 'Failed to add account', 'error');
+  }
+}
+
+function populateAccountSelects() {
+  const selects = [
+    document.getElementById('txnAccount'),
+    document.getElementById('txnToAccount'),
+    document.getElementById('filterAccount')
+  ];
+
+  selects.forEach(select => {
+    if (!select) return;
+    const currentValue = select.value;
+    const isFilter = select.id === 'filterAccount';
+    const emptyLabel = isFilter ? 'All Accounts' : 'Select account';
+    select.innerHTML = `<option value="">${emptyLabel}</option>` +
+      accounts.map(a => `<option value="${a._id}">${escapeHtml(a.name)}</option>`).join('');
+    if (currentValue) select.value = currentValue;
+  });
+}
+
+function populateAccountFilters() {
+  const filterSelect = document.getElementById('filterAccount');
+  if (!filterSelect) return;
+
+  filterSelect.innerHTML = '<option value="">All Accounts</option>' +
+    accounts.map(a => `<option value="${a._id}">${escapeHtml(a.name)}</option>`).join('');
+}
+
+// ==================== FORM BINDINGS ====================
+
+function bindFormListeners() {
+  const filterAccount = document.getElementById('filterAccount');
+  const filterType = document.getElementById('filterType');
+  if (filterAccount) filterAccount.addEventListener('change', applyFilters);
+  if (filterType) filterType.addEventListener('change', applyFilters);
+
+  const typeInputs = document.querySelectorAll('input[name="type"]');
+  typeInputs.forEach(input => {
+    input.addEventListener('change', (e) => {
+      syncTransactionFormForType(e.target.value);
+    });
+  });
+
+  const expenseType = document.querySelector('input[name="type"][value="expense"]');
+  if (expenseType) expenseType.dispatchEvent(new Event('change'));
+}
+
+function getSelectedTxnType() {
+  return document.querySelector('input[name="type"]:checked')?.value || 'expense';
+}
+
+function syncTransactionFormForType(type) {
+  const categorySelect = document.getElementById('txnCategory');
+  const toAccountGroup = document.getElementById('txnToAccountGroup');
+  const categoryGroup = categorySelect?.closest?.('.form-group') || null;
+  const fromLabel = document.querySelector('label[for="txnAccount"]');
+  const toSelect = document.getElementById('txnToAccount');
+
+  if (toAccountGroup) toAccountGroup.style.display = type === 'transfer' ? 'block' : 'none';
+  if (categoryGroup) categoryGroup.style.display = type === 'transfer' ? 'none' : 'block';
+  if (fromLabel) fromLabel.textContent = type === 'transfer' ? 'From Account' : 'Account';
+  if (toSelect) toSelect.required = type === 'transfer';
+  if (categorySelect) categorySelect.required = type !== 'transfer';
+
+  if (categorySelect) {
+    const categories = type === 'income'
+      ? (typeof INCOME_CATEGORIES !== 'undefined' ? INCOME_CATEGORIES : [])
+      : (typeof EXPENSE_CATEGORIES !== 'undefined' ? EXPENSE_CATEGORIES : []);
+
+    categorySelect.innerHTML = '<option value="">Select category</option>' +
+      categories.map(cat => `<option value="${cat.id}">${escapeHtml(cat.name)}</option>`).join('');
+  }
+}
+
+// ==================== UTILITIES ====================
+
+function formatCurrency(amount) {
+  return new Intl.NumberFormat('en-LK', {
+    style: 'currency',
+    currency: 'LKR',
+    minimumFractionDigits: 2
+  }).format(amount || 0);
+}
+
+function formatDate(dateStr) {
+  const date = new Date(dateStr + 'T00:00:00');
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: date.getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined
+  });
+}
+
+function showToast(message, type = 'success') {
+  const toast = document.getElementById('successToast');
+  if (!toast) return;
+
+  const messageEl = document.getElementById('toastMessage');
+  messageEl.textContent = message;
+
+  toast.style.background = type === 'error' ? 'var(--danger)' : 'var(--gray-900)';
+  toast.style.display = 'block';
+
+  setTimeout(() => {
+    toast.style.display = 'none';
+  }, 3000);
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+function getAccountNameById(accountId) {
+  const acc = accounts.find(a => a._id === accountId);
+  return acc ? acc.name : 'Account';
+}
+
+function getExpenseCategoryName(categoryId) {
+  if (!categoryId) return 'Expense';
+  const list = typeof EXPENSE_CATEGORIES !== 'undefined' ? EXPENSE_CATEGORIES : [];
+  const match = list.find(c => c.id === categoryId);
+  return match ? match.name : 'Other Expense';
+}
+
+function getIncomeCategoryName(categoryId) {
+  if (!categoryId) return 'Income';
+  const list = typeof INCOME_CATEGORIES !== 'undefined' ? INCOME_CATEGORIES : [];
+  const match = list.find(c => c.id === categoryId);
+  return match ? match.name : 'Other Income';
+}
+
+function getExpenseCategoryColor(categoryId, index = 0) {
+  const list = typeof EXPENSE_CATEGORIES !== 'undefined' ? EXPENSE_CATEGORIES : [];
+  const match = list.find(c => c.id === categoryId);
+  if (match?.color) return match.color;
+  const fallback = ['#6366f1', '#10b981', '#ef4444', '#f59e0b', '#8b5cf6', '#ec4899'];
+  return fallback[index % fallback.length];
+}
+
+function getTransactionTitle(txn) {
+  if (!txn) return '';
+  if (txn.type === 'transfer') {
+    const from = getAccountNameById(txn.accountId);
+    const to = getAccountNameById(txn.toAccountId);
+    return `Transfer: ${from} → ${to}`;
+  }
+  if (txn.type === 'income') return getIncomeCategoryName(txn.category);
+  return getExpenseCategoryName(txn.category);
+}
+
+function setLoading(isLoading) {
+  const indicator = document.getElementById('loadingIndicator');
+  if (!indicator) return;
+  indicator.style.display = isLoading ? 'flex' : 'none';
+}
+
+// Close modals on outside click
+window.addEventListener('click', (e) => {
+  if (e.target.classList.contains('modal')) {
+    e.target.style.display = 'none';
+  }
+});
 // Budget Manager - Simplified PWA App
 
 // Global state (Firestore shapes)

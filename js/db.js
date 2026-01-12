@@ -1,3 +1,352 @@
+// Firebase Firestore + Auth helper for Budget Manager (rewritten for reliability)
+
+class Database {
+  constructor() {
+    this.firestore = null;
+    this.auth = null;
+    this.userId = null;
+    this.userEmail = null;
+    this.username = null;
+  }
+
+  async init() {
+    try {
+      if (typeof firebase === 'undefined') {
+        throw new Error('Firebase SDK not loaded');
+      }
+      if (!CONFIG?.FIREBASE_CONFIG?.apiKey) {
+        throw new Error('Firebase config is missing');
+      }
+
+      if (!firebase.apps.length) {
+        firebase.initializeApp(CONFIG.FIREBASE_CONFIG);
+      }
+
+      this.auth = firebase.auth();
+      this.firestore = firebase.firestore();
+
+      await this.auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+
+      return await new Promise((resolve) => {
+        this.auth.onAuthStateChanged(async (user) => {
+          if (user) {
+            this.userId = user.uid;
+            this.userEmail = user.email;
+            this.username = user.displayName || null;
+
+            const lastLogin = localStorage.getItem('lastLoginTime');
+            const oneWeek = 7 * 24 * 60 * 60 * 1000;
+            if (lastLogin && (Date.now() - parseInt(lastLogin, 10)) > oneWeek) {
+              await this.auth.signOut();
+              localStorage.removeItem('lastLoginTime');
+              resolve({ requiresLogin: true });
+              return;
+            }
+
+            localStorage.setItem('lastLoginTime', Date.now().toString());
+            resolve({ requiresLogin: false });
+          } else {
+            resolve({ requiresLogin: true });
+          }
+        }, (error) => {
+          console.error('Auth listener error:', error);
+          resolve({ requiresLogin: true, error: error.message });
+        });
+      });
+    } catch (error) {
+      console.error('Firebase initialization failed:', error);
+      return { requiresLogin: true, error: error.message };
+    }
+  }
+
+  usernameToEmail(username) {
+    const cleaned = String(username || '').trim().toLowerCase();
+    const normalized = cleaned.replace(/[^a-z0-9._-]/g, '');
+    if (!normalized || normalized.length < 3) {
+      throw new Error('Username must be at least 3 characters');
+    }
+    if (normalized.length > 32) {
+      throw new Error('Username must be 32 characters or less');
+    }
+    const domain = CONFIG.AUTH_EMAIL_DOMAIN || 'budgetmanager.app';
+    return `${normalized}@${domain}`;
+  }
+
+  async signUp(username, password) {
+    try {
+      const email = this.usernameToEmail(username);
+      const userCredential = await this.auth.createUserWithEmailAndPassword(email, password);
+
+      if (userCredential?.user) {
+        await userCredential.user.updateProfile({ displayName: String(username).trim() });
+        this.userId = userCredential.user.uid;
+        this.userEmail = userCredential.user.email;
+        this.username = userCredential.user.displayName;
+      }
+
+      localStorage.setItem('lastLoginTime', Date.now().toString());
+      return { success: true };
+    } catch (error) {
+      console.error('Sign up failed:', error);
+      return { success: false, error: this.humanizeAuthError(error) };
+    }
+  }
+
+  async signInWithUsername(username, password) {
+    try {
+      const email = this.usernameToEmail(username);
+      const userCredential = await this.auth.signInWithEmailAndPassword(email, password);
+      this.userId = userCredential.user.uid;
+      this.userEmail = userCredential.user.email;
+      this.username = userCredential.user.displayName || String(username).trim();
+      localStorage.setItem('lastLoginTime', Date.now().toString());
+      return { success: true };
+    } catch (error) {
+      console.error('Sign in failed:', error);
+      return { success: false, error: this.humanizeAuthError(error) };
+    }
+  }
+
+  async signOut() {
+    await this.auth.signOut();
+    localStorage.removeItem('lastLoginTime');
+    this.userId = null;
+    this.userEmail = null;
+    this.username = null;
+    return { success: true };
+  }
+
+  isAuthenticated() {
+    return !!this.userId;
+  }
+
+  humanizeAuthError(error) {
+    const code = error?.code || '';
+    if (code.includes('auth/email-already-in-use')) return 'Username already exists';
+    if (code.includes('auth/invalid-email')) return 'Invalid username';
+    if (code.includes('auth/weak-password')) return 'Password is too weak';
+    if (code.includes('auth/user-not-found')) return 'Account not found';
+    if (code.includes('auth/wrong-password')) return 'Invalid password';
+    if (code.includes('auth/invalid-credential')) return 'Invalid username or password';
+    return error?.message || 'Authentication failed';
+  }
+
+  // =====================
+  // ACCOUNTS OPERATIONS
+  // =====================
+
+  ensureAuth() {
+    if (!this.userId) throw new Error('Not authenticated');
+  }
+
+  async getAccounts() {
+    this.ensureAuth();
+    const snapshot = await this.firestore
+      .collection(CONFIG.COLLECTIONS.ACCOUNTS)
+      .where('userId', '==', this.userId)
+      .get();
+
+    const records = snapshot.docs.map(doc => ({ _id: doc.id, ...doc.data() }));
+    return records.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  }
+
+  async addAccount(account) {
+    this.ensureAuth();
+
+    const newAccount = {
+      name: String(account.name || '').trim(),
+      type: account.type || 'account',
+      balance: parseFloat(account.balance) || 0,
+      createdAt: new Date().toISOString(),
+      userId: this.userId
+    };
+
+    const docRef = await this.firestore
+      .collection(CONFIG.COLLECTIONS.ACCOUNTS)
+      .add(newAccount);
+
+    return { _id: docRef.id, ...newAccount };
+  }
+
+  async updateAccount(id, updates) {
+    this.ensureAuth();
+    const docRef = this.firestore.collection(CONFIG.COLLECTIONS.ACCOUNTS).doc(id);
+    const snap = await docRef.get();
+    if (!snap.exists) throw new Error('Account not found');
+    if (snap.data()?.userId !== this.userId) throw new Error('Unauthorized');
+
+    await docRef.update(updates);
+    return { _id: id, ...snap.data(), ...updates };
+  }
+
+  async deleteAccount(id) {
+    this.ensureAuth();
+
+    const docRef = this.firestore.collection(CONFIG.COLLECTIONS.ACCOUNTS).doc(id);
+    const snap = await docRef.get();
+    if (!snap.exists) throw new Error('Account not found');
+    if (snap.data()?.userId !== this.userId) throw new Error('Unauthorized');
+
+    await docRef.delete();
+
+    const transRef = this.firestore.collection(CONFIG.COLLECTIONS.TRANSACTIONS);
+    const [fromSnap, toSnap] = await Promise.all([
+      transRef.where('userId', '==', this.userId).where('accountId', '==', id).get(),
+      transRef.where('userId', '==', this.userId).where('toAccountId', '==', id).get()
+    ]);
+
+    const batch = this.firestore.batch();
+    fromSnap.forEach(doc => batch.delete(doc.ref));
+    toSnap.forEach(doc => batch.delete(doc.ref));
+    await batch.commit();
+
+    return true;
+  }
+
+  // ========================
+  // TRANSACTIONS OPERATIONS
+  // ========================
+
+  async getTransactions(filters = {}) {
+    this.ensureAuth();
+
+    const snapshot = await this.firestore
+      .collection(CONFIG.COLLECTIONS.TRANSACTIONS)
+      .where('userId', '==', this.userId)
+      .get();
+
+    const tx = snapshot.docs.map(doc => ({ _id: doc.id, ...doc.data() }));
+    return this.applyTransactionFilters(tx, filters);
+  }
+
+  applyTransactionFilters(transactions, filters) {
+    let tx = [...transactions];
+
+    if (filters.accountId) {
+      tx = tx.filter(t => t.accountId === filters.accountId || t.toAccountId === filters.accountId);
+    }
+    if (filters.type) {
+      tx = tx.filter(t => t.type === filters.type);
+    }
+    if (filters.fromDate) {
+      tx = tx.filter(t => t.date >= filters.fromDate);
+    }
+    if (filters.toDate) {
+      tx = tx.filter(t => t.date <= filters.toDate);
+    }
+    if (filters.month) {
+      const start = `${filters.month}-01`;
+      const end = this.getMonthEnd(filters.month);
+      tx = tx.filter(t => t.date >= start && t.date <= end);
+    }
+
+    tx.sort((a, b) => new Date(b.date) - new Date(a.date));
+    return tx;
+  }
+
+  getMonthEnd(month) {
+    const [year, m] = month.split('-').map(Number);
+    const last = new Date(year, m, 0);
+    const mm = String(last.getMonth() + 1).padStart(2, '0');
+    const dd = String(last.getDate()).padStart(2, '0');
+    return `${year}-${mm}-${dd}`;
+  }
+
+  async addTransaction(transaction) {
+    this.ensureAuth();
+
+    const txRef = this.firestore.collection(CONFIG.COLLECTIONS.TRANSACTIONS).doc();
+    const fromRef = this.firestore.collection(CONFIG.COLLECTIONS.ACCOUNTS).doc(transaction.accountId);
+    const toRef = transaction.type === 'transfer'
+      ? this.firestore.collection(CONFIG.COLLECTIONS.ACCOUNTS).doc(transaction.toAccountId)
+      : null;
+
+    const newTransaction = {
+      type: transaction.type,
+      amount: parseFloat(transaction.amount),
+      category: transaction.type === 'transfer' ? null : transaction.category,
+      accountId: transaction.accountId,
+      toAccountId: transaction.type === 'transfer' ? transaction.toAccountId : null,
+      date: transaction.date,
+      note: transaction.note || '',
+      userId: this.userId,
+      createdAt: new Date().toISOString()
+    };
+
+    await this.firestore.runTransaction(async (t) => {
+      const fromSnap = await t.get(fromRef);
+      if (!fromSnap.exists) throw new Error('Account not found');
+      if (fromSnap.data()?.userId !== this.userId) throw new Error('Unauthorized');
+
+      const amt = parseFloat(transaction.amount);
+      const fromBalance = parseFloat(fromSnap.data().balance || 0);
+
+      if (transaction.type === 'income') {
+        t.update(fromRef, { balance: fromBalance + amt });
+      } else if (transaction.type === 'expense') {
+        t.update(fromRef, { balance: fromBalance - amt });
+      } else if (transaction.type === 'transfer') {
+        if (!toRef) throw new Error('Destination account required');
+        const toSnap = await t.get(toRef);
+        if (!toSnap.exists) throw new Error('Destination account not found');
+        if (toSnap.data()?.userId !== this.userId) throw new Error('Unauthorized');
+        const toBalance = parseFloat(toSnap.data().balance || 0);
+        t.update(fromRef, { balance: fromBalance - amt });
+        t.update(toRef, { balance: toBalance + amt });
+      }
+
+      t.set(txRef, newTransaction);
+    });
+
+    return { _id: txRef.id, ...newTransaction };
+  }
+
+  async deleteTransaction(id) {
+    this.ensureAuth();
+
+    const txDocRef = this.firestore.collection(CONFIG.COLLECTIONS.TRANSACTIONS).doc(id);
+
+    await this.firestore.runTransaction(async (t) => {
+      const txSnap = await t.get(txDocRef);
+      if (!txSnap.exists) throw new Error('Transaction not found');
+      const txData = txSnap.data();
+      if (txData?.userId !== this.userId) throw new Error('Unauthorized');
+
+      const fromRef = this.firestore.collection(CONFIG.COLLECTIONS.ACCOUNTS).doc(txData.accountId);
+      const toRef = txData.type === 'transfer'
+        ? this.firestore.collection(CONFIG.COLLECTIONS.ACCOUNTS).doc(txData.toAccountId)
+        : null;
+
+      const fromSnap = await t.get(fromRef);
+      if (!fromSnap.exists) throw new Error('Account not found');
+      if (fromSnap.data()?.userId !== this.userId) throw new Error('Unauthorized');
+
+      const amt = parseFloat(txData.amount);
+      const fromBalance = parseFloat(fromSnap.data().balance || 0);
+
+      if (txData.type === 'income') {
+        t.update(fromRef, { balance: fromBalance - amt });
+      } else if (txData.type === 'expense') {
+        t.update(fromRef, { balance: fromBalance + amt });
+      } else if (txData.type === 'transfer') {
+        if (!toRef) throw new Error('Destination account missing');
+        const toSnap = await t.get(toRef);
+        if (!toSnap.exists) throw new Error('Destination account not found');
+        if (toSnap.data()?.userId !== this.userId) throw new Error('Unauthorized');
+        const toBalance = parseFloat(toSnap.data().balance || 0);
+        t.update(fromRef, { balance: fromBalance + amt });
+        t.update(toRef, { balance: toBalance - amt });
+      }
+
+      t.delete(txDocRef);
+    });
+
+    return true;
+  }
+}
+
+// Create global database instance
+const db = new Database();
 // Firebase Firestore Database Connection Module with localStorage fallback
 
 class Database {
