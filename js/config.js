@@ -35,6 +35,7 @@ const EXPENSE_CATEGORIES = [
     { id: 'personal', name: 'Personal Care', icon: 'bi-person', color: '#f368e0' },
     { id: 'gifts', name: 'Gifts & Donations', icon: 'bi-gift', color: '#ee5a24' },
     { id: 'travel', name: 'Travel', icon: 'bi-airplane', color: '#0abde3' },
+    { id: 'lost_money', name: 'Lost Money', icon: 'bi-question-circle', color: '#576574' },
     { id: 'other_expense', name: 'Other Expense', icon: 'bi-three-dots', color: '#8395a7' }
 ];
 

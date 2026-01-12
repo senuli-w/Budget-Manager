@@ -1,6 +1,8 @@
 // Budget Manager - Simplified PWA App
 
-// Global state
+// Global state (Firestore shapes)
+// accounts: { _id, name, type, balance, ... }
+// transactions: { _id, type, amount, category, accountId, toAccountId, date, note, ... }
 let accounts = [];
 let transactions = [];
 let allTransactions = [];
@@ -34,6 +36,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     // User is logged in
     await loadAppData();
     showMainApp();
+
+    // Optional deep link: ?section=dashboard|add-transaction|transactions|accounts
+    const section = new URLSearchParams(window.location.search).get('section');
+    if (section) {
+      setActiveSection(section);
+    }
   } catch (error) {
     console.error('Initialization error:', error);
     alert('Error initializing app. Please refresh.');
@@ -50,8 +58,8 @@ function showMainApp() {
 // Load all app data
 async function loadAppData() {
   try {
-    accounts = await db.getAccounts() || [];
-    transactions = await db.getTransactions() || [];
+    accounts = (await db.getAccounts()) || [];
+    transactions = (await db.getTransactions()) || [];
     allTransactions = [...transactions];
 
     // Populate account selects
@@ -64,7 +72,11 @@ async function loadAppData() {
     renderAccounts();
 
     // Set today's date as default
-    document.getElementById('txnDate').valueAsDate = new Date();
+    const txnDateEl = document.getElementById('txnDate');
+    if (txnDateEl) txnDateEl.valueAsDate = new Date();
+
+    // Ensure the Add form starts in a valid state
+    syncTransactionFormForType(getSelectedTxnType());
   } catch (error) {
     console.error('Error loading app data:', error);
   }
@@ -83,9 +95,9 @@ async function handleLogin(event) {
     btn.textContent = 'Logging in...';
     btn.disabled = true;
 
-    const success = await db.signIn(password);
-    
-    if (success) {
+    const result = await db.signIn(password);
+
+    if (result?.success) {
       document.getElementById('passwordInput').value = '';
       await loadAppData();
       showMainApp();
@@ -123,13 +135,24 @@ async function handleLogout() {
 // ==================== SECTION NAVIGATION ====================
 
 function switchSection(event, sectionId) {
+  const tab = event?.target?.closest?.('.nav-tab');
+  setActiveSection(sectionId, tab);
+}
+
+function setActiveSection(sectionId, activeTabEl = null) {
   // Update active tab
   document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
-  event.target.closest('.nav-tab').classList.add('active');
+  if (activeTabEl) {
+    activeTabEl.classList.add('active');
+  } else {
+    const tabBySection = document.querySelector(`.nav-tab[data-section="${CSS.escape(sectionId)}"]`);
+    if (tabBySection) tabBySection.classList.add('active');
+  }
 
   // Update active section
   document.querySelectorAll('.section').forEach(sec => sec.classList.remove('active'));
-  document.getElementById(sectionId).classList.add('active');
+  const sectionEl = document.getElementById(sectionId);
+  if (sectionEl) sectionEl.classList.add('active');
 
   // Refresh section data if needed
   if (sectionId === 'dashboard') {
@@ -157,14 +180,14 @@ async function updateDashboard() {
   let monthExpenses = 0;
 
   accounts.forEach(account => {
-    totalBalance += account.balance || 0;
+    totalBalance += Number(account.balance || 0);
   });
 
   transactions.forEach(txn => {
-    const txnMonth = txn.date.substring(0, 7);
+    const txnMonth = (txn.date || '').substring(0, 7);
     if (txnMonth === currentMonth) {
-      if (txn.type === 'income') monthIncome += txn.amount;
-      if (txn.type === 'expense') monthExpenses += txn.amount;
+      if (txn.type === 'income') monthIncome += Number(txn.amount || 0);
+      if (txn.type === 'expense') monthExpenses += Number(txn.amount || 0);
     }
   });
 
@@ -184,30 +207,36 @@ async function updateDashboard() {
 }
 
 function updateCharts() {
-  // Account distribution chart
-  const accountCtx = document.getElementById('accountsChart')?.getContext('2d');
-  if (accountCtx) {
+  // Spending by category (current month expenses)
+  const categoryCtx = document.getElementById('accountsChart')?.getContext('2d');
+  if (categoryCtx) {
     if (window.accountsChartInstance) window.accountsChartInstance.destroy();
 
-    const chartData = {
-      labels: accounts.map(a => a.name),
-      datasets: [{
-        data: accounts.map(a => a.balance),
-        backgroundColor: [
-          '#6366f1',
-          '#10b981',
-          '#ef4444',
-          '#f59e0b',
-          '#8b5cf6',
-          '#ec4899'
-        ],
-        borderWidth: 0
-      }]
-    };
+    const now = new Date();
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
-    window.accountsChartInstance = new Chart(accountCtx, {
+    const totalsByCategory = new Map();
+    transactions
+      .filter(t => t.type === 'expense' && (t.date || '').startsWith(currentMonth))
+      .forEach(t => {
+        const catId = t.category || 'other_expense';
+        totalsByCategory.set(catId, (totalsByCategory.get(catId) || 0) + Number(t.amount || 0));
+      });
+
+    const sorted = [...totalsByCategory.entries()]
+      .filter(([, total]) => total > 0)
+      .sort((a, b) => b[1] - a[1]);
+
+    const labels = sorted.map(([catId]) => getExpenseCategoryName(catId));
+    const data = sorted.map(([, total]) => total);
+    const colors = sorted.map(([catId], idx) => getExpenseCategoryColor(catId, idx));
+
+    window.accountsChartInstance = new Chart(categoryCtx, {
       type: 'doughnut',
-      data: chartData,
+      data: {
+        labels,
+        datasets: [{ data, backgroundColor: colors, borderWidth: 0 }]
+      },
       options: {
         responsive: true,
         maintainAspectRatio: true,
@@ -228,9 +257,9 @@ function updateCharts() {
 
     let income = 0, expense = 0;
     transactions.forEach(txn => {
-      if (txn.date.substring(0, 7) === currentMonth) {
-        if (txn.type === 'income') income += txn.amount;
-        if (txn.type === 'expense') expense += txn.amount;
+      if ((txn.date || '').substring(0, 7) === currentMonth) {
+        if (txn.type === 'income') income += Number(txn.amount || 0);
+        if (txn.type === 'expense') expense += Number(txn.amount || 0);
       }
     });
 
@@ -280,14 +309,16 @@ function renderDashboardTransactions() {
   const container = document.getElementById('dashboardTransactions');
   if (!container) return;
 
-  const recent = transactions.slice(-5).reverse();
+  const recent = [...transactions]
+    .sort((a, b) => new Date(b.date) - new Date(a.date))
+    .slice(0, 5);
   container.innerHTML = recent.length ? recent.map(txn => `
     <div class="transaction-item">
       <div class="transaction-icon ${txn.type}">
         ${getTransactionIcon(txn.type)}
       </div>
       <div class="transaction-info">
-        <div class="transaction-category">${txn.category}</div>
+        <div class="transaction-category">${getTransactionTitle(txn)}</div>
         <div class="transaction-date">${formatDate(txn.date)}</div>
       </div>
       <div class="transaction-amount ${txn.type}">
@@ -302,67 +333,69 @@ function renderDashboardTransactions() {
 async function handleAddTransaction(event) {
   event.preventDefault();
 
-  const type = document.querySelector('input[name="type"]:checked').value;
-  const amount = parseFloat(document.getElementById('txnAmount').value);
+  const type = getSelectedTxnType();
+  const amount = Number(document.getElementById('txnAmount').value);
   const category = document.getElementById('txnCategory').value;
-  const account = document.getElementById('txnAccount').value;
+  const accountId = document.getElementById('txnAccount').value;
+  const toAccountId = document.getElementById('txnToAccount').value;
   const date = document.getElementById('txnDate').value;
   const note = document.getElementById('txnNote').value;
 
-  if (!type || !amount || !category || !account || !date) {
+  // Validation rules per type
+  if (!type || !amount || !accountId || !date) {
     showToast('Please fill all required fields', 'error');
     return;
   }
 
-  const transaction = {
-    id: Date.now().toString(),
+  if ((type === 'income' || type === 'expense') && !category) {
+    showToast('Please select a category', 'error');
+    return;
+  }
+
+  if (type === 'transfer') {
+    if (!toAccountId) {
+      showToast('Please select a destination account', 'error');
+      return;
+    }
+    if (toAccountId === accountId) {
+      showToast('From and To accounts must be different', 'error');
+      return;
+    }
+  }
+
+  const payload = {
     type,
     amount,
-    category,
-    account,
-    toAccount: type === 'transfer' ? document.getElementById('txnToAccount').value : null,
+    category: type === 'transfer' ? null : category,
+    accountId,
+    toAccountId: type === 'transfer' ? toAccountId : null,
     date,
-    note,
-    timestamp: new Date().toISOString()
+    note
   };
 
   try {
-    // Add transaction to database
-    await db.addTransaction(transaction);
+    await db.addTransaction(payload);
 
-    // Update local account balances
-    const accountObj = accounts.find(a => a.id === account);
-    if (accountObj) {
-      if (type === 'income') {
-        accountObj.balance += amount;
-      } else if (type === 'expense') {
-        accountObj.balance -= amount;
-      } else if (type === 'transfer') {
-        const toAccountObj = accounts.find(a => a.id === transaction.toAccount);
-        if (toAccountObj) {
-          accountObj.balance -= amount;
-          toAccountObj.balance += amount;
-          await db.updateAccount(toAccountObj);
-        }
-      }
-      await db.updateAccount(accountObj);
-    }
+    // Reload from DB so balances and history are always correct
+    accounts = (await db.getAccounts()) || [];
+    transactions = (await db.getTransactions()) || [];
+    allTransactions = [...transactions];
 
-    // Refresh data
-    transactions.push(transaction);
-    allTransactions.push(transaction);
+    populateAccountSelects();
+    populateAccountFilters();
 
-    // Reset form
-    event.target.reset();
-    document.getElementById('txnDate').valueAsDate = new Date();
+    // Reset form (keep current type)
+    const form = event.target;
+    form.reset();
+    const txnDateEl = document.getElementById('txnDate');
+    if (txnDateEl) txnDateEl.valueAsDate = new Date();
+    syncTransactionFormForType(type);
 
     showToast('Transaction added!');
-    updateDashboard();
-    renderTransactions(transactions);
-    switchSection({ target: document.querySelector('[data-section="dashboard"]').parentElement }, 'dashboard');
+    setActiveSection('dashboard');
   } catch (error) {
     console.error('Error adding transaction:', error);
-    showToast('Failed to add transaction', 'error');
+    showToast('Could not update balances. Check Firestore rules and try again.', 'error');
   }
 }
 
@@ -378,7 +411,7 @@ function renderTransactions(txns = transactions) {
         ${getTransactionIcon(txn.type)}
       </div>
       <div class="transaction-info">
-        <div class="transaction-category">${txn.category}</div>
+        <div class="transaction-category">${getTransactionTitle(txn)}</div>
         <div class="transaction-date">${formatDate(txn.date)}</div>
       </div>
       <div class="transaction-amount ${txn.type}">
@@ -417,7 +450,7 @@ function applyFilters() {
   let filtered = allTransactions;
 
   if (accountFilter) {
-    filtered = filtered.filter(t => t.account === accountFilter);
+    filtered = filtered.filter(t => t.accountId === accountFilter || t.toAccountId === accountFilter);
   }
   if (typeFilter) {
     filtered = filtered.filter(t => t.type === typeFilter);
@@ -459,17 +492,9 @@ async function handleAddAccount(event) {
   const type = document.getElementById('accountType').value;
   const balance = parseFloat(document.getElementById('accountBalance').value) || 0;
 
-  const account = {
-    id: Date.now().toString(),
-    name,
-    type,
-    balance,
-    timestamp: new Date().toISOString()
-  };
-
   try {
-    await db.addAccount(account);
-    accounts.push(account);
+    const created = await db.addAccount({ name, type, balance });
+    accounts.push(created);
 
     // Reset form and close modal
     event.target.reset();
@@ -495,8 +520,10 @@ function populateAccountSelects() {
   selects.forEach(select => {
     if (!select) return;
     const currentValue = select.value;
-    select.innerHTML = '<option value="">Select account</option>' +
-      accounts.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
+    const isFilter = select.id === 'filterAccount';
+    const emptyLabel = isFilter ? 'All Accounts' : 'Select account';
+    select.innerHTML = `<option value="">${emptyLabel}</option>` +
+      accounts.map(a => `<option value="${a._id}">${a.name}</option>`).join('');
     if (currentValue) select.value = currentValue;
   });
 }
@@ -506,7 +533,7 @@ function populateAccountFilters() {
   if (!filterSelect) return;
 
   filterSelect.innerHTML = '<option value="">All Accounts</option>' +
-    accounts.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
+    accounts.map(a => `<option value="${a._id}">${a.name}</option>`).join('');
 }
 
 // Update category dropdown based on transaction type
@@ -514,27 +541,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const typeInputs = document.querySelectorAll('input[name="type"]');
   const categorySelect = document.getElementById('txnCategory');
   const toAccountGroup = document.getElementById('txnToAccountGroup');
+  const categoryGroup = categorySelect?.closest?.('.form-group') || null;
+  const fromLabel = document.querySelector('label[for="txnAccount"]');
 
   typeInputs.forEach(input => {
     input.addEventListener('change', (e) => {
       const type = e.target.value;
-
-      // Update categories
-      const categories = {
-        expense: ['Food', 'Transport', 'Utilities', 'Entertainment', 'Health', 'Shopping', 'Other'],
-        income: ['Salary', 'Freelance', 'Investment', 'Gift', 'Other'],
-        transfer: ['Bank Transfer', 'Account Transfer', 'Cash Transfer']
-      };
-
-      if (categorySelect) {
-        categorySelect.innerHTML = '<option value="">Select category</option>' +
-          (categories[type] || []).map(cat => `<option value="${cat}">${cat}</option>`).join('');
-      }
-
-      // Show/hide "To Account" field for transfers
-      if (toAccountGroup) {
-        toAccountGroup.style.display = type === 'transfer' ? 'block' : 'none';
-      }
+      syncTransactionFormForType(type, { categorySelect, categoryGroup, toAccountGroup, fromLabel });
     });
   });
 
@@ -542,6 +555,35 @@ document.addEventListener('DOMContentLoaded', () => {
   const expenseType = document.querySelector('input[name="type"][value="expense"]');
   if (expenseType) expenseType.dispatchEvent(new Event('change'));
 });
+
+function getSelectedTxnType() {
+  return document.querySelector('input[name="type"]:checked')?.value || 'expense';
+}
+
+function syncTransactionFormForType(type, els = {}) {
+  const categorySelect = els.categorySelect || document.getElementById('txnCategory');
+  const toAccountGroup = els.toAccountGroup || document.getElementById('txnToAccountGroup');
+  const categoryGroup = els.categoryGroup || categorySelect?.closest?.('.form-group') || null;
+  const fromLabel = els.fromLabel || document.querySelector('label[for="txnAccount"]');
+  const toSelect = document.getElementById('txnToAccount');
+
+  // Show/hide fields
+  if (toAccountGroup) toAccountGroup.style.display = type === 'transfer' ? 'block' : 'none';
+  if (categoryGroup) categoryGroup.style.display = type === 'transfer' ? 'none' : 'block';
+  if (fromLabel) fromLabel.textContent = type === 'transfer' ? 'From Account' : 'Account';
+  if (toSelect) toSelect.required = type === 'transfer';
+  if (categorySelect) categorySelect.required = type !== 'transfer';
+
+  // Populate categories for income/expense
+  if (categorySelect) {
+    const categories = type === 'income'
+      ? (typeof INCOME_CATEGORIES !== 'undefined' ? INCOME_CATEGORIES : [])
+      : (typeof EXPENSE_CATEGORIES !== 'undefined' ? EXPENSE_CATEGORIES : []);
+
+    categorySelect.innerHTML = '<option value="">Select category</option>' +
+      categories.map(cat => `<option value="${cat.id}">${cat.name}</option>`).join('');
+  }
+}
 
 // ==================== UTILITY FUNCTIONS ====================
 
@@ -579,6 +621,46 @@ function showToast(message, type = 'success') {
   setTimeout(() => {
     toast.style.display = 'none';
   }, 3000);
+}
+
+function getAccountNameById(accountId) {
+  const acc = accounts.find(a => a._id === accountId);
+  return acc ? acc.name : 'Account';
+}
+
+function getExpenseCategoryName(categoryId) {
+  if (!categoryId) return 'Expense';
+  const list = typeof EXPENSE_CATEGORIES !== 'undefined' ? EXPENSE_CATEGORIES : [];
+  const match = list.find(c => c.id === categoryId);
+  return match ? match.name : 'Other Expense';
+}
+
+function getIncomeCategoryName(categoryId) {
+  if (!categoryId) return 'Income';
+  const list = typeof INCOME_CATEGORIES !== 'undefined' ? INCOME_CATEGORIES : [];
+  const match = list.find(c => c.id === categoryId);
+  return match ? match.name : 'Other Income';
+}
+
+function getExpenseCategoryColor(categoryId, index = 0) {
+  const list = typeof EXPENSE_CATEGORIES !== 'undefined' ? EXPENSE_CATEGORIES : [];
+  const match = list.find(c => c.id === categoryId);
+  if (match?.color) return match.color;
+  const fallback = ['#6366f1', '#10b981', '#ef4444', '#f59e0b', '#8b5cf6', '#ec4899'];
+  return fallback[index % fallback.length];
+}
+
+function getTransactionTitle(txn) {
+  if (!txn) return '';
+  if (txn.type === 'transfer') {
+    const from = getAccountNameById(txn.accountId);
+    const to = getAccountNameById(txn.toAccountId);
+    return `Transfer: ${from} → ${to}`;
+  }
+  if (txn.type === 'income') {
+    return getIncomeCategoryName(txn.category);
+  }
+  return getExpenseCategoryName(txn.category);
 }
 
 // Close modals on outside click

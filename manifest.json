@@ -2,8 +2,8 @@
   "name": "Budget Manager",
   "short_name": "Budget",
   "description": "A simple and beautiful budget management app",
-  "start_url": "/Budget-Manager/",
-  "scope": "/Budget-Manager/",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "orientation": "portrait-primary",
   "background_color": "#ffffff",
@@ -36,7 +36,7 @@
       "name": "Add Transaction",
       "short_name": "Add",
       "description": "Quickly add a new transaction",
-      "url": "/Budget-Manager/?section=transactions",
+      "url": "./?section=add-transaction",
       "icons": [
         {
           "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%236366f1' width='192' height='192'/><path fill='white' d='M96 48c26.51 0 48 21.49 48 48s-21.49 48-48 48-48-21.49-48-48 21.49-48 48-48zm0 80c17.67 0 32-14.33 32-32s-14.33-32-32-32-32 14.33-32 32 14.33 32 32 32zm24-64h-16v-16h-16v16H72v16h16v16h16v-16h16z'/></svg>",

@@ -1,15 +1,15 @@
 // Service Worker for Budget Manager PWA
 
-const CACHE_VERSION = 'v1.0.0';
+const CACHE_VERSION = 'v1.0.1';
 const CACHE_NAME = `budget-manager-${CACHE_VERSION}`;
 const urlsToCache = [
-  '/Budget-Manager/',
-  '/Budget-Manager/index.html',
-  '/Budget-Manager/css/style.css',
-  '/Budget-Manager/js/app.js',
-  '/Budget-Manager/js/db.js',
-  '/Budget-Manager/js/config.js',
-  '/Budget-Manager/manifest.json',
+  './',
+  './index.html',
+  './css/style.css',
+  './js/app.js',
+  './js/db.js',
+  './js/config.js',
+  './manifest.json',
   'https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.woff2',
 ];
 
@@ -55,7 +55,7 @@ self.addEventListener('fetch', (event) => {
       event.request.url.includes('googleapis')) {
     event.respondWith(
       fetch(event.request)
-        .catch(() => caches.match('/Budget-Manager/offline.html'))
+        .catch(() => caches.match('./index.html'))
     );
     return;
   }
