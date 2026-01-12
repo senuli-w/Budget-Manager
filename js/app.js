@@ -103,7 +103,11 @@ async function handleLogin(event) {
       showMainApp();
       showToast('Welcome back!');
     } else {
-      showToast('Invalid PIN', 'error');
+      const isWrongPassword = result.error?.toLowerCase().includes('wrong-password');
+      const message = isWrongPassword
+        ? 'Invalid PIN – make sure the Firebase user password matches your PIN per SETUP.md'
+        : 'Invalid PIN';
+      showToast(message, 'error');
       document.getElementById('pinInput').focus();
     }
   } catch (error) {
