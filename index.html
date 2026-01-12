@@ -36,8 +36,9 @@
             
             <form class="login-form" onsubmit="handleLogin(event)">
                 <div class="form-group">
-                    <label for="passwordInput">Password</label>
-                    <input type="password" id="passwordInput" class="form-input" placeholder="Enter your password" required autofocus>
+                    <label for="pinInput">PIN</label>
+                    <input type="password" id="pinInput" class="form-input" minlength="4" maxlength="4" placeholder="Enter your 4-digit PIN" required autofocus>
+                    <small class="form-hint">Use your personal PIN (1644) to unlock the app on every device.</small>
                 </div>
                 <button type="submit" class="btn-primary">Login</button>
             </form>

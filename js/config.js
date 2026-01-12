@@ -9,8 +9,9 @@ const CONFIG = {
         appId: '1:817688844370:web:00354b2f8a1a7c1de7e78b',
         measurementId: 'G-45NDMNN1LN'
     },
-    // Fixed email for your account (password will be set in Firebase)
+    // Fixed email for the shared account (PIN stored as the password)
     USER_EMAIL: 'user@budgetmanager.app',
+    USER_PIN: '1644',
     DATABASE_NAME: 'budget_manager',
     COLLECTIONS: {
         ACCOUNTS: 'accounts',

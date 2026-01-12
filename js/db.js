@@ -63,10 +63,11 @@ class Database {
     }
 
     // Sign in with password (uses fixed email)
-    async signIn(password) {
+    async signIn(pin) {
         try {
             const email = CONFIG.USER_EMAIL;
-            const userCredential = await this.auth.signInWithEmailAndPassword(email, password);
+            const credential = pin || CONFIG.USER_PIN;
+            const userCredential = await this.auth.signInWithEmailAndPassword(email, credential);
             this.userId = userCredential.user.uid;
             this.userEmail = userCredential.user.email;
             this.useLocalStorage = false;

@@ -1,187 +1,124 @@
 # Budget Manager - Setup Guide
 
-## Setting Up Your Password
+## PIN-first Login (PIN: 1644)
 
-Your Budget Manager app now uses password authentication instead of anonymous login. This means your data is tied to a single account and syncs across all your devices.
+Budget Manager uses a single shared PIN (`1644`) so you can unlock the app from any device without managing usernames. The PIN is simply the password for the Firebase user `user@budgetmanager.app`, and it lives only in Firebase (the app only references it for documentation purposes).
 
 ### Step 1: Enable Email/Password Authentication in Firebase
 
 1. Go to [Firebase Console](https://console.firebase.google.com)
 2. Select your project: **budgetmanager-21858**
-3. In the left sidebar, click **Authentication**
-4. Click the **Sign-in method** tab
-5. Click on **Email/Password**
-6. Toggle **Enable** to ON
-7. Click **Save**
+3. Open the **Authentication** section
+4. Switch to the **Sign-in method** tab
+5. Turn on **Email/Password**
+6. Click **Save**
 
-### Step 2: Create Your User Account
+### Step 2: Ensure the shared account uses PIN 1644
 
-You need to create a user account with a password. You have two options:
+The app expects a single Firebase user with the email `user@budgetmanager.app` and the PIN `1644` as the password. Configure the account using one of these options:
 
-#### Option A: Using Firebase Console (Easiest)
+#### Option A: Firebase Console (recommended)
 
-1. In Firebase Console → **Authentication** → **Users** tab
-2. Click **Add user**
-3. Email: `user@budgetmanager.app` (must match exactly)
-4. Password: Choose a strong password (you'll use this to login)
-5. Click **Add user**
+1. Visit Authentication → Users in Firebase
+2. Click **Add user** (or edit the existing user)
+3. Email: `user@budgetmanager.app`
+4. Password: `1644`
+5. Save the user
 
-#### Option B: Using Firebase CLI (Advanced)
+If the user already exists, edit the record and reset the password to `1644` so every device can reuse the same PIN.
 
-If you have Node.js installed:
+#### Option B: Firebase CLI (advanced)
 
-```bash
-npm install -g firebase-tools
-firebase login
-```
+1. Install Firebase tools:
+   ```bash
+   npm install -g firebase-tools
+   firebase login
+   ```
+2. Create `setup-user.js`:
+   ```javascript
+   const admin = require('firebase-admin');
+   const serviceAccount = require('./path/to/serviceAccountKey.json');
 
-Then create a script `setup-user.js`:
+   admin.initializeApp({
+     credential: admin.credential.cert(serviceAccount)
+   });
 
-```javascript
-const admin = require('firebase-admin');
-const serviceAccount = require('./path-to-your-service-account-key.json');
+   async function updatePin() {
+     try {
+       await admin.auth().updateUser('user@budgetmanager.app', {
+         password: '1644'
+       });
+       console.log('PIN reset to 1644');
+     } catch (error) {
+       console.error('Failed to update PIN', error);
+     }
+   }
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
+   updatePin();
+   ```
+3. Run `node setup-user.js` to reset the PIN in Firebase.
 
-async function createUser() {
-  try {
-    const userRecord = await admin.auth().createUser({
-      email: 'user@budgetmanager.app',
-      password: 'YOUR_PASSWORD_HERE', // Replace with your password
-      emailVerified: true
-    });
-    console.log('Successfully created user:', userRecord.uid);
-  } catch (error) {
-    console.log('Error creating user:', error);
-  }
-}
+### Step 3: Update Firestore security rules
 
-createUser();
-```
-
-Run: `node setup-user.js`
-
-### Step 3: Update Firebase Security Rules
-
-Since we're no longer using anonymous auth, update your Firestore security rules:
-
-1. Go to Firebase Console → **Firestore Database** → **Rules** tab
-2. Replace with these rules:
+Paste the following rules in the **Rules** tab so only the authenticated user may access the data:
 
 ```javascript
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Only authenticated users can access their own data
     match /{document=**} {
-      allow read, write: if request.auth != null 
+      allow read, write: if request.auth != null
                        && request.auth.token.email == 'user@budgetmanager.app';
     }
   }
 }
 ```
 
-3. Click **Publish**
+Click **Publish**.
 
-### Step 4: Clear Existing Anonymous Data (Optional)
+### Step 4: (Optional) Clear any anonymous data
 
-If you had any data from anonymous sessions, you should delete it:
+If you previously used anonymous storage, delete any documents whose `userId` does not match the new Firebase user. You may also delete the entire `accounts`, `transactions`, and `budgets` collections and start fresh.
 
-1. Go to Firebase Console → **Firestore Database** → **Data** tab
-2. Find any documents with `userId` that are NOT your new user's UID
-3. Delete those collections/documents manually
+### Step 5: Test the PIN login
 
-**Or** delete all existing data to start fresh:
-- Delete the entire `accounts` collection
-- Delete the entire `transactions` collection
-- Delete the entire `budgets` collection
+1. Open the Budget Manager app (locally or via https://senuli-w.github.io/Budget-Manager/)
+2. The login screen now prompts for a PIN
+3. Enter **1644**
+4. You should see your synced dashboard and data
 
-### Step 5: Test Your Login
+### Step 6: Daily usage
 
-1. Open your Budget Manager app (locally or on GitHub Pages)
-2. You should see a login screen
-3. Enter your password
-4. You should be logged in and see an empty dashboard
+- Sessions persist for 1 week; after that the app will ask for PIN 1644 again.
+- New devices work instantly—open the app, enter PIN 1644, and your data syncs from Firestore.
+- Use the Logout button in the header to sign out manually.
 
-### Step 6: Using the App
+### Updating the PIN
 
-**On the same device:**
-- You'll stay logged in for 1 week
-- After 1 week, you'll be asked to enter your password again
+1. Go to Firebase Console → Authentication → Users
+2. Locate `user@budgetmanager.app`
+3. Click the overflow menu → **Reset password**
+4. Enter the new PIN (e.g., `1644`)
+5. Update the PIN in `js/config.js` (`USER_PIN` + any references) so the app keeps in sync with Firebase.
 
-**On a new device:**
-- Open the app URL
-- Enter your password
-- Your data will sync automatically from Firestore
+### Security notes
 
-**To logout manually:**
-- Click the **Logout** button in the navigation menu
-
-### Changing Your Password
-
-To change your password:
-
-1. Go to Firebase Console → **Authentication** → **Users**
-2. Find your user (`user@budgetmanager.app`)
-3. Click the three dots menu → **Reset password**
-4. Enter your new password
-5. Click **Save**
-
-### Security Notes
-
-- Your password is never stored in the app code
-- Firebase handles all authentication securely
-- Your data is encrypted in transit and at rest
-- Only you (with the correct password) can access your budget data
-- The app works offline and syncs when you're back online
+- The PIN only exists in Firebase; the app never sends it elsewhere or stores it in plaintext locally.
+- Firebase always encrypts your data in transit and at rest.
+- Only the user with the PIN can read or write your budget data.
+- Offline support keeps your data available; it syncs as soon as you go online.
 
 ### Troubleshooting
 
-**"Invalid password" error:**
-- Make sure you created the user account in Firebase
-- Check that the email is exactly `user@budgetmanager.app`
-- Verify your password is correct
+- **Invalid PIN** → verify that the Firebase user exists and that the password is `1644`.
+- **Firebase not initialized** → check the config in `js/config.js` and your internet connection.
+- **Data not syncing** → confirm you are logged in and the security rules are published.
+- **Session expired** → enter PIN 1644 again; this happens automatically every 7 days.
 
-**"Firebase not initialized" error:**
-- Check your internet connection
-- Verify the Firebase config in `js/config.js` is correct
-- If offline, the app will use local storage as a fallback
+### Mobile and deployment notes
 
-**Data not syncing:**
-- Make sure you're logged in (not using local storage mode)
-- Check Firestore rules are published correctly
-- Verify you have internet connection
+- The UI is mobile-first and installable as a PWA.
+- The same PIN works in the browser and inside the installed app.
+- Your live deployment is available at https://senuli-w.github.io/Budget-Manager/.
 
-**Session expired after 1 week:**
-- This is normal behavior
-- Just enter your password again to continue
-
-### Mobile Usage
-
-The app is now optimized for mobile devices:
-- Responsive design works on all screen sizes
-- Touch-friendly buttons (44px minimum)
-- Simplified navigation on small screens
-- Form inputs sized to prevent auto-zoom on iOS
-- Works great on iPhone, Android, tablets, and desktop
-
-### GitHub Pages Deployment
-
-Your app should already be deployed. To verify:
-
-1. Go to your GitHub repo: `https://github.com/senuli-w/Budget-Manager`
-2. Settings → Pages
-3. Your app should be live at: `https://senuli-w.github.io/Budget-Manager/`
-
-Bookmark this URL on your phone and desktop for easy access!
-
----
-
-**Need Help?**
-
-If you encounter any issues, check:
-1. Firebase Console for any error messages
-2. Browser console (F12) for JavaScript errors
-3. Firestore Rules to ensure they're published correctly
+Need more help? Check the browser console, Firebase rules, or open `PWA_GUIDE.md` for detailed troubleshooting steps.

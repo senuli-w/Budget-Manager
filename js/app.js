@@ -29,7 +29,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (initResult.requiresLogin) {
       document.getElementById('loginScreen').style.display = 'flex';
       document.getElementById('mainApp').style.display = 'none';
-      document.getElementById('passwordInput').focus();
+      document.getElementById('pinInput').focus();
       return;
     }
 
@@ -87,7 +87,7 @@ async function loadAppData() {
 async function handleLogin(event) {
   event.preventDefault();
   
-  const password = document.getElementById('passwordInput').value;
+  const pin = document.getElementById('pinInput').value;
   const btn = event.target.querySelector('button');
   const originalText = btn.textContent;
 
@@ -95,16 +95,16 @@ async function handleLogin(event) {
     btn.textContent = 'Logging in...';
     btn.disabled = true;
 
-    const result = await db.signIn(password);
+    const result = await db.signIn(pin);
 
     if (result?.success) {
-      document.getElementById('passwordInput').value = '';
+      document.getElementById('pinInput').value = '';
       await loadAppData();
       showMainApp();
       showToast('Welcome back!');
     } else {
-      showToast('Invalid password', 'error');
-      document.getElementById('passwordInput').focus();
+      showToast('Invalid PIN', 'error');
+      document.getElementById('pinInput').focus();
     }
   } catch (error) {
     console.error('Login error:', error);
@@ -122,8 +122,8 @@ async function handleLogout() {
     await db.signOut();
     document.getElementById('mainApp').style.display = 'none';
     document.getElementById('loginScreen').style.display = 'flex';
-    document.getElementById('passwordInput').value = '';
-    document.getElementById('passwordInput').focus();
+    document.getElementById('pinInput').value = '';
+    document.getElementById('pinInput').focus();
     accounts = [];
     transactions = [];
   } catch (error) {
